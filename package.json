@@ -1,0 +1,14 @@
+{
+  "name": "flugspiel",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node tools/run-tests.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "puppeteer": "^25.10.0"
+  }
+}
