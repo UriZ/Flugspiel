@@ -113,6 +113,14 @@ class BrainMeta:
 
     _KEYS = ("ids", "cell_type", "side", "superclass", "nt", "nt_sign", "position", "ol_hex")
 
+    # `n` bounds every downstream allocation — the numba kernel allocates a
+    # PARTITIONS x n float32 buffer *per step*, so an unvalidated n out of a crafted
+    # brain.npz is a memory-exhaustion knob (n = 10**9 asks for 64 GB/step). The real
+    # connectome is 166,700; 5M admits a larger future dataset but not an absurd one.
+    _MAX_NEURONS = 5_000_000
+    _SHAPES = {"position": 3, "ol_hex": 2}  # (n, k); every other array is (n,)
+    _DTYPE_KINDS = {"ids": "i", "nt_sign": "f", "position": "f", "ol_hex": "f"}
+
     @property
     def n(self) -> int:
         return len(self.ids)
@@ -129,11 +137,37 @@ class BrainMeta:
                 missing = [k for k in cls._KEYS if k not in z]
                 if missing:
                     raise ConnectomeError(f"{path} is missing keys {missing}; delete it and run: {_BUILD_CMD}")
-                return cls(**{k: z[k] for k in cls._KEYS})
+                arrays = {k: z[k] for k in cls._KEYS}
         except ConnectomeError:
             raise
         except Exception as exc:  # corrupt npz
             raise ConnectomeError(f"{path} is unreadable ({exc}); delete it and run: {_BUILD_CMD}") from exc
+        cls._validate(Path(path), arrays)
+        return cls(**arrays)
+
+    @classmethod
+    def _validate(cls, path: Path, arrays: dict[str, np.ndarray]) -> None:
+        """Reject a brain.npz whose arrays disagree with each other or with `n`.
+
+        Nothing downstream re-checks this: `load()` only compares W.shape against
+        `meta.n`, and both LIF kernels index by `n` without bounds checking (#15).
+        """
+        bad = f"delete it and run: {_BUILD_CMD}"
+        ids = arrays["ids"]
+        if ids.ndim != 1:
+            raise ConnectomeError(f"{path}: ids must be 1-D, got shape {ids.shape}; {bad}")
+        n = len(ids)
+        if not 0 < n <= cls._MAX_NEURONS:
+            raise ConnectomeError(
+                f"{path}: implausible neuron count {n} (expected 1..{cls._MAX_NEURONS}); {bad}")
+        for key, arr in arrays.items():
+            want = (n, cls._SHAPES[key]) if key in cls._SHAPES else (n,)
+            if arr.shape != want:
+                raise ConnectomeError(f"{path}: {key} has shape {arr.shape}, expected {want}; {bad}")
+            kind = cls._DTYPE_KINDS.get(key)
+            if kind is not None and arr.dtype.kind != kind:
+                raise ConnectomeError(
+                    f"{path}: {key} has dtype {arr.dtype}, expected kind {kind!r}; {bad}")
 
 
 # --------------------------------------------------------------------------- pure helpers
@@ -413,6 +447,16 @@ def load(data_dir: Path | None = None) -> tuple[sparse.csc_matrix, BrainMeta]:
         raise ConnectomeError(f"{wpath} shape {W.shape} does not match brain.npz ({meta.n} neurons)")
     if W.dtype != np.float32 or W.format != "csc":
         raise ConnectomeError(f"{wpath} must be float32 CSC, got {W.dtype} {W.format}")
+    try:
+        # load_npz and csc_matrix() both run check_format(full_check=False), which
+        # validates indptr but *skips* the index-bounds check. Out-of-range indices then
+        # reach `buf[t, indices[p]] += data[p]` in the numba kernel and scipy's C
+        # csc_matvec, neither of which bounds-checks — a crafted weights.npz is an
+        # arbitrary heap write (SIGSEGV verified on both backends, #15). 14 ms on the
+        # real 25.6M-nonzero matrix, against a 0.29 s load.
+        W.check_format(full_check=True)
+    except ValueError as exc:
+        raise ConnectomeError(f"{wpath} is corrupt ({exc}); delete it and run: {_BUILD_CMD}") from exc
     return W, meta
 
 
