@@ -1228,3 +1228,183 @@ both runnable, both carry their expected output in the header, both re-run clean
 - [developer.md]: the mutation-battery section should require restoring **and re-verifying the digest** after *every* mutation, not just at the end. A 2-minute tool timeout killed my throughput loop mid-mutation and left the mutated module on disk; the trailing `cp` never ran. I caught it on the next `shasum`, but a battery that ends on a timeout can silently leave a mutant committed.
 - [code-review SKILL.md]: a fix a reviewer has already verified should still be re-verified by the developer *including its costs*. The review's "no throughput cost" for `read1` was wrong by ~35% on loopback. Harmless here, but a verified-by-reviewer claim gets quoted forward as established fact.
 - [workflow]: "un-patch the constant the test was monkeypatching" is not sufficient to de-vacuum a timing-dependent test. My first amendment ran at the production `_CHUNK` and *still* passed under the reverted fix, because a drip server that eventually closes makes the guard fire late rather than never. When the defect is "the guard runs too late", the assertion has to be on elapsed time; `pytest.raises` cannot distinguish. Worth stating in the vacuity guidance.
+
+---
+### [2026-09-12 21:55] — senior-developer — #17 (re-review), #15 (cross-link)
+**Task**: Re-review the two code-review must-fixes in `8af152e` (rate floor reachable; rate abort non-destructive) and audit the amended `test_stream_aborts_on_a_slow_drip`.
+**Result**: COMPLETED — **both must-fixes CLEARED**, no new must-fix, 1 new nice-to-have. Posted as `issuecomment-5647968858` on #17, cross-linked `issuecomment-5647970261` on #15.
+**Files changed**: `SESSION_LOG.md` only. `src/brain/connectome.py` = `cf40e2ce9d36fecaf920cbebc9deb6ec92bc897f` and `tests/test_connectome.py` = `87c0c83b19e692bfa07670c72c69701438340f45` after every mutation; digest re-checked inside a `try/finally` after **each** mutation rather than at the end, per the fixer's interrupted-battery caveat. `lif.py` and #3's files never opened.
+**Key changes**: none — review only.
+
+**Suite**: `tests/test_connectome.py` — `--collect-only` 58, `58 passed in 5.68s` under `-ra`, 0 skipped, 0 failed, no skip list. Unchanged count. loadavg 2.2–2.3.
+
+**MF1 cleared.** Independent drip server (connection held open, 1 B/20 ms) at the production `_CHUNK = 8388608`, varying only the grace: abort at **0.23 / 1.03 / 3.01 s** for grace 0.2 / 1.0 / 3.0 — tracks to within 30 ms, so `_RATE_GRACE` is live for the first time (it could not bind before: first check after 8 MB ≈ 1024 s at the floor). Over-rejection clean: a 1 s stall then the full 4096-byte body **completes** under a 2 s grace at a 4,083 B/s average, 256× below the floor. **Added to the record**: the floor cannot see a stall delivering *zero* bytes (`read1` still blocks with nothing buffered) — measured no abort at 5 s; `urlopen(timeout=60)` is what bounds that. The three guards are complementary and now cover the space: oversize → size bound, drip → rate floor, silence → socket timeout.
+
+**MF2 cleared, and it delivers the substance — but the new comment's mechanism is wrong.** `download()` against a Range-honouring drip server, three invocations: `.part` **12 → 25 → 38 B** with `Range` advancing `bytes=12-` → `bytes=25-`, 206 honoured. However **1 GET per invocation, not 3**: `download()`'s `for _ in range(3)` (`:370`) calls `_stream` *outside* the `try` (`:372`), so a rate abort propagates straight out — the retry loop only ever retried `_verify` failures. So `connectome.py:335-339` and `test_connectome.py:542` ("`download()` retries three times") are wrong; accumulation is across **runs**, not attempts. **My own first-pass review text asserted the same thing** — the conclusion held, the mechanism I cited did not. Filed as the one new nice-to-have, flagged as the second consecutive round of comment-inaccuracy in this file.
+
+**De-vacuuming — claim confirmed and sharpened.** The fixer reports the timing assertion as the discriminator; it is load-bearing but **not sufficient alone**. Isolation against mutation A (`read1`→`read`): shipped test → **1 failed, 57 passed**; drip shortened to 1.2 s with timing kept → **1 passed**; 6 s drip with timing removed → **1 passed** (8.54 s, aborts at EOF); both reverted → 1 passed. The discriminator is the **conjunction**. Its diagnosis of why un-patching `_CHUNK` alone was insufficient is exactly right (a server that gives up makes `read()` return short at EOF → guard fires late, not never → `pytest.raises` cannot tell them apart). Margin: passing case **0.27–0.31 s** over 5 runs vs the 2.0 s bound (6.5–7.4×), mutant at 7.9 s (4× above); failure direction under load is a false failure, not a false pass. Shortening the 6 s drip would silently re-vacuum the test and saves nothing — the passing case already costs 0.3 s.
+
+**Mutation battery — all three TL/fixer results reproduced exactly**: A `read1`→`read` → 1 failed / 57 passed, `AssertionError: guard must fire mid-drip, not at EOF (took 7.9s)`; B restore the rate-abort `unlink` → 1 failed / 57 passed, `FileNotFoundError` on `part.stat()`; C `(got - start)/elapsed` → `got/elapsed` → **58 passed, uncaught** (third independent reproduction; correctly left alone — code right, mutant permissive, testing suspended).
+
+**Corrections accepted**: my "`read1` has no throughput cost" was wrong *and unmeasured* — I reasoned it from iteration counts. Measured ~35% regression in loopback-saturated syscall-bound throughput (1206/1270/1217 vs 1834 MB/s); immaterial, since 1.2 GB/s keeps the 1.05 GB download network-bound. #19 TOCTOU conclusion stands; the fixer corrected the reason itself.
+
+**Technical decisions**: (1) Ran the mutation battery from a Python driver with `try/finally` restore plus a per-mutation digest assertion, so a tool timeout cannot leave a mutant on disk — the failure mode the fixer hit. (2) Isolated each test amendment separately instead of accepting "the timing assertion is the discriminator", which is what turned a confirmation into the sharper finding that neither amendment works alone. (3) Used a Range-honouring 206 server for the MF2 progress check — a plain-200 drip server would have reset `start` to 0 and shown no accumulation, i.e. would have wrongly refuted the fix. (4) Did not re-review the rest of `44cc371..bbdcefe`, per the brief.
+
+**Testing**: as above — baseline, three mutations full-suite, four isolation variants single-test, four standalone scratchpad experiments (grace sweep at production `_CHUNK`, stall-then-send over-rejection, total-silence coverage, three-invocation `download()` progress), 5 timing-margin runs. Tree digest-verified after each.
+
+**Label I believe is next**: `qa` — the two must-fixes are cleared and what remains is the narrow pass the TL already scoped (the three added behaviours plus one `build()` end-to-end run, since the on-disk artifact predates `_require` verifying). Not set by me.
+
+**Improvement Insights**:
+- [senior-developer.md]: add — **never state a performance consequence you have not measured, including a negative one.** My "no throughput cost for `read1`" was inferred from iteration counts and was wrong by ~35%. My own definition already says "profile before optimizing"; it needs the converse, because asserting *absence* of a cost feels free and is not.
+- [senior-developer.md]: add — **when prescribing a fix direction for a vacuous test, say what the test must be able to *distinguish*, not just what to change.** I said "stop monkeypatching `_CHUNK`"; that alone left the test passing against the broken code, because the short drip turned "never fires" into "fires at EOF". The requirement was "must discriminate never-fires from fires-late", which implies both the held-open connection and a timing bound.
+- [code-review/SKILL.md]: add to §mutation testing — **run the battery from a driver with `try/finally` restore and a digest assertion after *each* mutation.** Two agents in two rounds have now had a window where a mutant was on disk; the fixer's was caused by a 2-minute tool timeout mid-battery, which no amount of care in the shell prevents.
+- [workflow]: a re-review brief that hands over the fixer's own mutation table *and* the claim it most wants challenged ("verify that claim independently — it's the one that decides whether the test has teeth") is what made this pass cheap and targeted. Worth keeping as the standing re-review format.
+
+---
+### [2026-09-12 22:15] — qa — #15, #17, #18 (verification), #20 (addition), #21 (new)
+**Task**: Narrow verification pass on the three behaviours the security fixes added (#15 bounds rejection at `load()`, #17 rate floor + size bound, #18 symlink refusal) plus one end-to-end `build()` against the real `data/raw/` — the judge's specific ask, since the on-disk artifact predates `_require` verifying anything.
+**Result**: PASS — all three behaviours verify clean, `build()` proven and bit-reproducible. **1 new bug filed (#21, Medium)**, 1 measured addition to #20 (Low). Neither is a regression in the fixes.
+**Issues verified**: #15 (PASS), #17 (PASS), #18 (PASS with residual)
+**New bugs filed**: #21
+**Files changed**: `SESSION_LOG.md` only. `src/` and `tests/` untouched (verification by execution — testing suspended per `CLAUDE.md:55`; throwaway scripts in the scratchpad, no committed tests). Production `data/` artifacts backed up and digest-verified before starting, re-checked after and **unchanged**.
+
+**Environment**: `.venv/bin/python` **3.13.3** vs `architecture.md:63` "Python 3.12+" — satisfied. `numba 0.61.2`, `pyarrow 25.0.1`, `scipy 1.18.1`, `numpy 2.2.6`, `pytest 9.1.1`. Recorded as asked and left in place: `httpx 0.28.1`, `httpx2 2.12.0`, `httpcore2 2.12.0`, `httpcore 1.0.9`, `h11 0.16.0` in the venv but absent from `requirements-dev.txt`.
+
+**Suite**: `pytest tests/ --ignore=tests/game -q -ra` → **`205 passed in 212.92s`**, 0 skipped, 0 xfailed, `-ra` printed no skip section. Matches the inherited figure at `5729780`.
+
+**#15 — PASS.** 8/8 crafted `weights.npz` variants rejected at the `load()` boundary as `ConnectomeError` (`n`, `n+1`, `-1`, `-2_000_000`, `5_000_000`, `2**31-1`, `-(2**31)`, all-out-of-range), each message naming the file and the remedy; sane baseline still loads, no false positives. Per the brief I asserted **rejection at the boundary**, never a specific crash. **Guard proven load-bearing** by bypassing `load()` at real scale (`n=166700`, `nnz=25582938`, 1,000 corrupted indices) in subprocesses: offset `5_000_000` and `2_000_000_000` → **exit 139 on both numpy and numba**; offset **`166700` (exactly `n`) → exit 0, SURVIVED**, 66,582 / 66,568 spikes, `v` all finite. The off-by-one case is the important one: it writes into the adjacent allocation and produces a plausible answer with **no crash to notice**, which is both the strongest argument for boundary rejection and the reason a "this variant segfaults" test would be flaky.
+
+**#17 — PASS at production constants.** Earlier probes patched `_MIN_RATE`/`_RATE_GRACE` down; I ran them **unpatched** (8192 B/s, 30.0 s, `_CHUNK=8388608`). (1) 20 B/s drip → abort at **30.1 s**, `.part` **KEPT** (532 B). (2) 2 KB after a 5 s stall (400 B/s, far under the floor) **completes** inside the grace window — no over-rejection. (3) Pinned 4096 B vs a 1 MB server → abort at `got 8075`, `.part` **REMOVED**, overshoot bounded by one `read1`. (4) 900 KB pre-existing `.part` resumed via `Range` then dripped → abort at 30.0 s. On (4): the known uncaught mutation `(got-start)/elapsed → got/elapsed` was **not re-filed** (fourth sighting), but is now shown **non-equivalent by measurement** — with `got/elapsed` the pre-existing bytes read **~30,716 B/s**, above the floor, so the abort never fires on exactly the resumed-sub-floor-link case resume exists for. Code correct; gap is test coverage only, and testing is suspended, so nothing owed.
+
+**#18 — PASS, one residual → #21.** All three open paths refuse a pre-planted symlink with the victim intact: `O_TRUNC` (ELOOP), `O_CREAT` (dangling — target not created), `O_APPEND` (resume). Symlink→`/dev/null` refused; a directory at the `.part` path refused cleanly as `ConnectomeError` (EISDIR), not an uncaught `OSError`. No false positives on fresh download or genuine resume. `_warn_if_shared` correct in both directions (0777 warns, 0755 silent). Also checked clean: the final `raw/<name>` target is **not** symlink-exploitable — `os.replace` replaces the symlink rather than writing through it.
+
+**#21 (new, Medium)** — the `.part` open checks whether the path *is a symlink* but never what the opened inode **is** or how many names point at it. A pre-planted **hardlink** is accepted and attacker bytes overwrite the victim through the shared inode (`victim overwritten=True ... b'ATTACKER-CONTROLLED-BYTES'`). A pre-planted **FIFO** blocks `os.open` indefinitely — before any socket exists, so `urlopen(timeout=60)` cannot help; SIGKILLed at 12 s, **exit 137**. Same threat model/precondition as #18; one `os.fstat(fd)` (`S_ISREG` + `st_nlink == 1`) plus `O_NONBLOCK` closes both, with `O_EXCL` on the fresh path needed to stop `O_TRUNC` zeroing the victim before the check runs. macOS/CI-exposed; `fs.protected_hardlinks=1` mitigates symptom 1 on hardened Linux.
+
+**`build()` end-to-end — PASS (the judge's ask).** Against the real 1.11 GB `data/raw/`, `FLUGSPIEL_DATA` pointed at a scratch dir whose `raw/` symlinks the real sources — so production artifacts were never a write target and the output is directly comparable. `_require` hashed all three inputs. **22.9 s wall clock** (not the expected minutes), peak RSS 2.04 GB, `load()` on the fresh output 0.19 s. Summary exactly `{"neurons": 166700, "connections": 25582938, "inhibitory": 59262, "excitatory": 107438, "unknown_nt": 3177, "photoreceptors": 6006}`. **All three artifacts byte-identical** to those on disk (`cmp` clean on both `.npz`, `diff` clean on `brain.json`, sha256 `c05d979a…` / `78b4afeb…` / `872e89dd…`) — so `build()` works post-fixes, is bit-reproducible, and the artifact downstream agents have been using is retroactively validated.
+
+**#20 addition (Low, no new issue).** `_sanity()` contains `np.isfinite(W.data).all()` and runs only in `build()`, so `load()` accepts a crafted `weights.npz` with NaN/+inf weights. **Measured the blast radius instead of asserting it**: one NaN synapse of 25,582,938 in the real brain stays at **exactly 1 non-finite neuron over 60 steps** — a NaN `v` fails `v >= threshold`, so the neuron never fires and never propagates. Contained, not contagious; the consequence is already tracked as **#13**, the new part is the **ingress** (`load()` alongside `stimulate()`). Posted on #20 as a concrete instance of its item 2 rather than a duplicate.
+
+**Checked and found clean** (enumerated so nobody redoes it or assumes coverage): the 8 index shapes; both kernels at real scale; rate floor / size bound / grace at production constants with `.part` semantics both directions; the `Range`/206 resume path; symlink refusal on all three open paths with both no-false-positive cases; the final target path; `_require` reading through symlinks; `build()` + fresh `load()`; `_warn_if_shared` both directions. **Not covered, explicitly**: total-silence abort (inherited as `urlopen` socket timeout, not re-measured); #1's AC sweep (deliberately not re-run per the brief); the known-wrong "retries three times" comment at `connectome.py:335-339` / `test_connectome.py:542` (**not re-filed**).
+
+**Label I believe is next**: **#15 ready for its judge gate** — three behaviours verify clean and `build()` is proven. #21 is new and independent; in my reading it blocks neither #15 nor #1 (residual needing a shared-writable data dir), but that is the TL's call. **Not set by me** — QA does not certify its own stage.
+
+**Improvement Insights**:
+- [qa.md]: add to the non-UI track — **when a guard's constants gate its behaviour, verify the production values at least once, unpatched.** Three prior agents patched `_MIN_RATE`/`_RATE_GRACE` down for speed and all concluded "the floor fires"; none had shown the *shipped* 8192 B/s + 30 s combination ever fires. It does (30.1 s), but that was an untested assumption riding on four passes. Cost: 35 s.
+- [qa.md]: add — **measure a blast radius before assigning severity to a silent-corruption finding.** "NaN weights poison the brain" was my working hypothesis and it is wrong — NaN is contained to one neuron because NaN fails the threshold comparison. Measuring turned a would-be High into a correctly-scoped Low and connected it to existing #13 instead of producing a dramatic duplicate.
+- [qa.md]: add — **check the issue list for the owning issue before filing.** Two of my three findings already had homes (#20 for the load-path `_sanity` gap, #13 for the NaN consequence). Filing them fresh would have produced two duplicates and split three threads about the same validator. `gh issue list --state all` before `gh issue create` is one call.
+- [CLAUDE.md]: the "a green test run must be proven" rule should extend to **negative security results**: a guard verified only under patched constants, or a crash-based proof at toy scale, is the same class of false green as a zero-test run. My `OFF=166700` case exited **0** at real scale where `OFF=5_000_000` exited 139 — a toy-scale or single-offset probe would have missed that boundary rejection is the only protection for the off-by-one.
+- [workflow]: the brief's "facts established — inherit these, do not re-derive" block plus the explicit **do-not-re-file** list (the retry comment, the `got/elapsed` mutation) is what kept this pass narrow. It also let me add value on the mutation — proving non-equivalence — instead of re-reporting it as new. Worth keeping verbatim as the standing format for follow-up QA briefs.
+
+---
+### [2026-09-12 19:25] — judge — #1 (feature gate re-run, retry 1/2)
+**Gate type**: final / feature (`GATE_FREQUENCY: feature`) — re-run of the FAIL at `issuecomment-5647768962`
+**Verdict**: **PASS** — posted as `issuecomment-5648141867`
+**Score**: 9/10 — **Threshold**: 7/10
+**Judged at**: HEAD `7be14f1`. `connectome.py` sha256 `3a2d1d37…`, `test_connectome.py` `cadcdba0…`, re-asserted inside `finally` after **each** mutation; `git diff` over `src/`/`tests/` empty at close.
+
+**Why the FAIL is closed.** My one blocking gap was process-only: `44cc371`, `a88d8c1`, `bbdcefe` unreviewed. Both remedies I specified ran, and the missing stage justified itself — it found the shipped `_MIN_RATE` guard **unreachable at the production `_CHUNK`** (dead code) with a test that passed identically against reachable and unreachable variants. No mutation battery can reach that class, including the nine I ran last gate: there was nothing to mutate, the shipped code *was* the broken case. Fixed in `8af152e`, re-reviewed and cleared.
+
+**Verified by my own execution** (nothing inherited): full suite **205 passed in 214.48 s, 0 skipped**, `-ra` emitted no short-summary section; #1's own files **91 collected / 91 passed in 14.05 s** (58+27+6). `git diff 5729780..HEAD --name-only` = SESSION_LOG, `connectome.py`, `test_connectome.py` **only** — `lif.py`/`test_lif.py`/`test_integration.py` byte-unchanged, so last gate's AC3/AC5/AC6 evidence stays attributable. MF1 at production `_CHUNK` with grace the only variable: abort at **0.23/1.01/3.01 s** for grace 0.2/1.0/3.0, `.part` kept 9/38/112 B; **fully unpatched** (8192 B/s, 30.0 s, 8 MB chunk) abort at **30.01 s**, prefix kept 1128 B. Over-rejection clean: 1 s stall then a full 4096 B body **completes** in 1.03 s at 3976 B/s, 2.06× *below* the floor. Oversize abort still **removes** the `.part` (`got 8075`). **AC1 live against Janelia GCS on the changed `read1` path**: cold digest-exact at 8.0 MB/s, 40 %-truncated `Range` resume digest **identical to the cold run**, oversized-`.part` restart, `download()` atomic + idempotent. #15 boundary first-hand: 5/5 crafted variants rejected at `load()` with a matching `brain.npz` in place, sane control accepted. AC2 digests at HEAD (`c05d979a…`/`78b4afeb…`/`872e89dd…`, 205,331,565 B) **identical to QA's fresh build**, which corroborates bit-reproducibility independently and keeps last gate's whole-matrix AC4 audit valid. AC5 **280.4 steps/s** numba, **21.3 steps/s** numpy, `firing=6.8 %` on both (the deterministic discriminator — no measurement came off mutated source).
+
+**Mutations (3, each restored + digest-asserted)**: A `read1`→`read` = **1 failed**; B restore the rate-abort `unlink` = **1 failed**; C `(got-start)/elapsed`→`got/elapsed` = **58 passed, UNCAUGHT** (5th sighting, not re-filed — non-equivalent per QA, but testing suspended so nothing owed). **Conjunction claim reproduced exactly**: shipped test 1 passed in 0.40 s; A alone **1 failed in 8.83 s**; A + 1.2 s drip **passes**; A + timing assertion removed **passes**. Both halves load-bearing; the passing case costs 0.40 s against a 2.0 s bound, so shortening the drip saves nothing and silently deletes the coverage.
+
+**Key gaps**: none blocking. Non-blocking and scored down: three comments claim a mechanism the code lacks (`connectome.py:335-339`, `test_connectome.py:543`, and `8af152e`'s commit message) — `_stream` is called at `:371` **outside** the `try` at `:373`, so a rate abort propagates out of `download()` and the `range(3)` loop only ever retried `_verify`. Correct conclusion, wrong mechanism; Medium×2, and consistent with my last-gate treatment of `lif.py:64-74`.
+
+**Rulings**: (1) **#21 does not block** — TL's position upheld, and I reproduced both symptoms first-hand rather than taking them on report (hardlink `nlink=2` **accepted**, victim becomes 2500 B of `ATTACKER-CONTROLLED-BYTES`; FIFO **hung**, SIGKILLed at 12.0 s, exit −9; symlink control refused, victim intact). No AC touches filesystem hardening, same precondition class as #18, filed with ACs, and the docstring at `:251-256` does not overclaim. **Warning issued for its implementer: the prescribed `O_EXCL` is unsafe as written** — `start` is reset to 0 at `:302-311` after a `.part` already exists, so `O_EXCL` breaks the legitimate restart pinned by `test_stream_restarts_when_server_ignores_range:461` and `…_206_range_does_not_match_request:472`, and MF2 makes that state *more* common. (2) The known-wrong comment is acceptable at this gate but escalates to must-fix if it survives another round in this file — the commit-message instance is now uncorrectable. (3) `read1`'s 35 % loopback cost is closed by the live figure: 8.0 MB/s end to end, network-bound by ~150×.
+
+**Residue left open against #1, named for user approval**: #21, #12/#13/#14, #20, the 10 nice-to-haves (incl. the three retry comments), and `PARTITIONS = 16` unpinned (last gate's J4). Nothing pushed.
+
+**Improvement Insights**:
+- [criteria.md]: add the feature-gate row I asked for last round — *every commit in the feature's range has an independent code review; name the reviewing comment per commit range*. Now evidenced twice, and it is the highest-value thing this gate did. Beside it: *a review whose prescribed fix is itself a design change must be re-reviewed* — that re-review caught the reviewer's own error propagating into shipped code.
+- [criteria.md]: extend Developer #5 — *a comment stating a mechanism the code does not have is a defect in security code, and escalates to must-fix on its second appearance in the same file*. Three instances of one wrong claim have passed two reviews and two gates as "nice to have"; the weight table cannot currently express "Medium, but not twice".
+- [judge.md]: **a mutation battery cannot see a guard that never executes.** I ran nine mutations over this function last gate and passed it because there was nothing to mutate. Mutation proves a test discriminates between two variants; it says nothing about whether either runs. Pair every guard with a reachability check at production constants.
+- [senior-developer.md]: promote this review's method — *demonstrate a reachability claim by varying only the constant in question and reporting both arms* (`_CHUNK=1` → 0.53 s vs `8388608` → no abort in 8 s). Corrected form of the insight I filed against this same file last round.
+- [qa.md]: lift QA's own insight verbatim — *verify a guard at production constants at least once, unpatched*. Generalisation: **a monkeypatch that makes a test fast is a hypothesis that the patched value does not change the code path** — state it and check it once.
+- [workflow]: the TL brief should carry **what changed since the last gate as a `git diff --name-only`**. That one line let me reuse three ACs' evidence honestly instead of re-running a 200-second sweep.
+
+---
+### [2026-09-13 00:15] — architect — #4 (partial: agent lost to machine sleep)
+**Task**: Implementation spec for the WebSocket server + bridge.
+**Result**: SPEC DELIVERED, agent lost before its TLDR. Recorded by the TL.
+
+The agent died with `failureReason: "API Error: Your computer went to sleep mid-response."` after
+posting the complete spec but before writing this entry or its Improvement Insights.
+
+**The skeleton-first rule worked and should stay.** Two prior architect runs on #4 held the spec in
+context intending to post at the end, and both idled without delivering — two full analysis runs lost.
+This run was instructed to post a skeleton to the issue as its *first* substantive action and fill in
+afterwards. It posted ~39k chars across three comments (`part 1/N` skeleton, `part 2/3`, `part 3/3`)
+and lost nothing of substance when the machine slept.
+
+**Spec posted to #4**: §0 Corrections table, §1 Context and trust model, §2 Wire schema client->server,
+§3 Wire schema server->client, §4 the `session` counter decision, §5 Connection lifecycle and server
+loop, §6 Latency budget (AC2), §7 Dependencies, §8 AC5 startup contract.
+
+**Decisions worth carrying forward**:
+- **No `requirements-dev.txt` change.** AC6 is verification by execution against a real uvicorn process
+  driven by the `websockets` client (already in `requirements.txt`), so `fastapi.testclient` is never
+  imported and the httpx/httpx2 question is sidestepped entirely. Conditional recorded: *if* anything
+  later imports `fastapi.testclient`, the dep is **`httpx2`**, not `httpx` — verified
+  `starlette/testclient.py:32-51` imports httpx2 first, falls back to httpx with a
+  `StarletteDeprecationWarning`, raises `RuntimeError` if neither. Runtime check: `testclient binds ->
+  httpx2 2.12.0`.
+- **Environment drift flagged, not acted on**: `httpx 0.28.1`, `httpx2 2.12.0`, `httpcore2`, `h11` are
+  installed in `.venv` and declared by **no** requirements file — left by the previous architect run. A
+  clean `pip install -r requirements-dev.txt` will not produce them, so a developer must not assume
+  they are present. The agent correctly declined to prune the venv with other agents running against it.
+
+**Next label**: `developer` — applied by the TL.
+
+### Retrospective — architect #4
+**Not derived from the agent** (it died before writing Improvement Insights). TL observations:
+- **Skeleton-first is now evidence-backed, not a precaution.** Third architect run on #4; first to
+  deliver; the only one instructed to post before analysing. Already in `tl.md` as crash insurance for
+  enumerable work — this extends it to *specs*, which are enumerable by section.
+- **A lost TLDR is cheap; a lost spec is not.** The retrospective loop is the only thing that breaks
+  when an agent dies after delivering. Worth accepting.
+
+---
+### [2026-09-13 00:30] — senior-developer — #3
+**Task**: Code review of the encoder/decoder implementation (`8ce8b15~1..f6c07a8`), using the `code-review` skill.
+**Result**: COMPLETED — 2 must-fix, 10 nice-to-have. Review posted as issue comment 5648780494.
+**Files changed**: none (`SESSION_LOG.md` only). No source file modified; all mutations restored and sha256-verified.
+**Key changes**:
+- (review only) `src/brain/decoder.py:51-56` — must-fix 1: readout `types` unvalidated against the brain
+- (review only) `tests/test_encoder.py:107-111` — must-fix 2: E2's AC6 roundtrip is self-referential
+**Technical decisions**:
+1. **Ruled all three documented deviations justified** (`column`/`loom` in `mapping.py`; `SignalCtx`; `photoreceptor_columns(types=…)`). Each was checked against the *normative* spec section rather than the §11 wiring sketch, and the `column`/`loom` placement was verified live by mutating `_coords`'s `same_half` (RED), proving the decoder genuinely needs both.
+2. **Ran the AC7 gain mutation in memory, not on disk.** The looming-gain 0.30→0.02 arm needed 223 s of real-brain simulation; writing it to `missile_attack.json` for that long would have exposed a mutant to the concurrent `architect-ws`. Handing a mutated dict to `Mapping.load` gives identical evidence with zero disk exposure. The 2.6 s arm that *had* to touch disk (running pytest against the mutated config) used `try/finally` + digest.
+3. **Classified surviving mutants by demonstrated observable behaviour**, per `criteria.md` row 8 — M4/M5/M9/M12 each shown to change output before being called a gap; M6 explicitly ruled equivalent at the shipped constants rather than reported as a hole.
+4. **Put must-fix 2 above the line while stating it blocks nothing today.** A test that certifies an acceptance criterion it cannot test is a false coverage record, and the fix is an edit to an existing assertion, not a new test — so it does not collide with the testing suspension.
+**Testing**:
+- Baseline `pytest -q -ra tests/test_mapping.py tests/test_encoder.py tests/test_decoder.py` → **109 passed, 0 skipped, 1.94 s** (matches the author's report).
+- **16-mutation battery** (script, `try/finally`, sha256 assert after each): 9 RED, 7 GREEN. Plus follow-up N1 (RED) clearing `test_weapon_ring_skips_dead` of suspected vacuity.
+- **Both arms of the `nan_to_num` unreachability claim**: guard deleted → E9 alone 20 passed GREEN; guard deleted → rogue-signal test RED. Author's diagnosis confirmed.
+- **Both arms of the decoder validation gap**: typo'd `aim.types`/`fire.types` → no error, population size 0; same typo in a site's `types` → `MappingError`. Control arm establishes the encoder does it right.
+- **Real brain, `backend="numpy"`, seed 0, loadavg 3.1–3.7**: R1 = DNp01-L 17.62 Hz / R 0.12 Hz; R2 shipped = real 1.000 / shuffled 0.500 (108 s); R2 at gain 0.02 = real 0.100 / shuffled 0.050 (115 s). Every number the author reported reproduces exactly.
+- **AC7's other arm**: synthetic suite under a gain-0.02 config → 109 passed, exit 0. AC1–AC6 are provably blind to a failure that zeroes R1.
+- Tree verified clean afterwards (`git status --porcelain -- src/brain` empty); suite re-run 109 green.
+**Improvement Insights**:
+- [CLAUDE.md]: the "a green test run must be proven" rule should add a **third** shape alongside zero-collected and silently-skipped — the *self-referential assertion*, where expected and actual derive from the same function (`assert argmin(f(x)) == g(x)` where `f` is built from `g`). It collects, it runs, it is non-zero, and it is still untestable. Neither a skip list nor a test count can reveal it; only mutation can.
+- [code-review/SKILL.md]: the vacuity checklist has three shapes (patched constant, monkeypatched threshold, non-firing sentinel), all of which are things the *test* does. Add a fourth that is about what the test *compares against*: "expected value computed by the code under test". That is what must-fix 2 is, and I only found it because a mutation to a third file came back green.
+- [criteria.md]: row 8's "equivalent mutant is a reporting item, not a test hole" was the single most useful line in the file this run — it kept M6 and M10 out of the findings list where a stricter reading would have inflated them. Consider adding the converse obligation explicitly: *demonstrate* the observable difference before promoting a surviving mutant to a gap. I did it (M4 at x=0.505, M5 at x=0.515, M9 at three y values, M12 with both channels hot), but the row currently only says "once it is shown", not "show it in the review".
+- [workflow]: mutating a **config file** rather than a source file was the right lever for the slowest arm of this review, and it generalises — where behaviour is config-driven by design (AC5), a mutation can often be held in memory and handed to the loader, costing zero disk exposure to concurrent agents. Worth stating in the skill's "Running a mutation battery safely" section, which currently assumes the mutation must be written to a file.
+
+---
+### [2026-09-13 14:10] — developer — #3
+**Task**: Fix the 2 must-fix items from #3's code review (dead readout on a config typo; self-referential E2)
+**Result**: COMPLETED
+**Files changed**: `src/brain/decoder.py`, `tests/test_encoder.py`
+**Key changes**:
+- `src/brain/decoder.py:36` — import `MappingError`
+- `src/brain/decoder.py:50-63` — eager validation of `aim`/`fire`/`weapon` `types` against `brain.meta.cell_type`, mirroring `encoder.py:176-185`. `brain.cells()` returns an empty array for an absent type, so a typo previously gave a permanently dead channel with no error. Checks the type list, not the per-side population, so a unilateral type (one side empty) still constructs
+- `tests/test_encoder.py:107-119` — E2 (AC6 roundtrip) now asserts against nine literal `(x, column)` pairs instead of `column(x, 36)`, which `_luminance` itself calls. Docstring records why the old form could not fail
+**Testing**:
+- `pytest -q -ra tests/test_mapping.py tests/test_encoder.py tests/test_decoder.py` → 109 passed, 0 failed, 0 skipped, 4.85 s
+- `pytest -q -ra tests/test_brain_loop.py` → 5 passed, 0 skipped, 219.16 s (realdata, run after the decoder change)
+- Mutation `mapping.py:218` `np.floor`→`np.round`: `FAILED tests/test_encoder.py::test_luminance_roundtrip` → 1 failed, 108 passed (was 109 passed before the E2 fix). Caught by E2 only — `test_col_covers_screen` stays green, i.e. still unpinned at interior values. Window ~3 s, restored from copy, sha256 re-verified `b48a781c…`
+- Must-fix 1 verified in memory (dict → `Mapping.load`, nothing on disk): three typo arms all raise `MappingError`; controls `aim.types=["MDN"]` (unilateral) and the shipped config both construct
+**Next label**: `qa` (remove `code-review`) — not applied, TL sets labels
+**Improvement Insights**:
+- [workflow]: with code review disabled, the reviewer's measured "before" numbers in the issue comment were the only baseline I could diff my fix against. Keep requiring reviewers to state the *measured* failing behaviour, not just the defect — it is what makes a later fix verifiable without re-running the review
+- [CLAUDE.md]: the testing suspension needs a stated carve-out for *amending* an existing assertion that is vacuous. The TL had to authorise this case by hand; a one-line rule ("fixing a test that cannot fail is a fix, not new coverage") would have made it self-serve
