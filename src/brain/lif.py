@@ -61,26 +61,38 @@ def _propagate_numpy(W: sparse.csc_matrix, fired: np.ndarray, n: int) -> np.ndar
     return W @ spikes
 
 
+PARTITIONS = 16
+"""How many slices `fired` is cut into — fixed, deliberately *not* the thread count.
+
+float32 addition is not associative, so the number of partial sums decides the result
+bit for bit. Keying it to `get_num_threads()` made the spike train a property of the
+machine's core count: same seed, same params, four different trains at 16/8/4/1 threads,
+diverging by step 30 (#11). numba schedules these 16 chunks onto however many threads
+exist, and the reduction below runs in partition order, so the output is identical
+everywhere. Costs nothing at 16 threads (1.92 vs 2.09 ms on the real connectome) and
+~1.3 ms/step at 8, where the 16 buffers are twice what the thread count would allocate.
+"""
+
+
 if numba is not None:
     @numba.njit(nogil=True, parallel=True)  # cache=True warns "dynamic globals" — don't
     def _propagate_numba(indptr, indices, data, fired, n):
         """Sum the CSC columns of the fired neurons into a dense current vector.
 
-        `fired` is split into one contiguous slice per thread, each accumulating into
-        its own buffer, so no two threads write the same element.
+        `fired` is split into `PARTITIONS` contiguous slices, each accumulating into its
+        own buffer, so no two threads write the same element.
         """
-        threads = numba.get_num_threads()
-        buf = np.zeros((threads, n), dtype=np.float32)
+        buf = np.zeros((PARTITIONS, n), dtype=np.float32)
         k = len(fired)
-        for t in numba.prange(threads):
-            for m in range(k * t // threads, k * (t + 1) // threads):
+        for t in numba.prange(PARTITIONS):
+            for m in range(k * t // PARTITIONS, k * (t + 1) // PARTITIONS):
                 j = fired[m]
                 for p in range(indptr[j], indptr[j + 1]):
                     buf[t, indices[p]] += data[p]
         out = np.zeros(n, dtype=np.float32)
         for i in numba.prange(n):
             acc = np.float32(0.0)
-            for t in range(threads):
+            for t in range(PARTITIONS):
                 acc += buf[t, i]
             out[i] = acc
         return out
@@ -91,10 +103,11 @@ else:  # pragma: no cover - depends on the install
 class FlyBrain:
     """A fly brain stepping at `params.dt`.
 
-    Determinism: same seed + same backend + same params ⇒ identical spike trains.
-    Across backends they diverge — the kernels sum the same weights in different orders
-    (~1e-7 relative), which is enough to flip a neuron sitting on the threshold. Compare
-    currents with a tolerance, never spike indices.
+    Determinism: same seed + same backend + same params ⇒ identical spike trains, on any
+    machine and at any thread count (see `PARTITIONS`). Across backends they diverge — the
+    kernels sum the same weights in different orders (~1e-7 relative), which is enough to
+    flip a neuron sitting on the threshold. Compare currents across backends with a
+    tolerance, never spike indices.
     """
 
     def __init__(self, weights: sparse.spmatrix, meta: BrainMeta,

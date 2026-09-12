@@ -1,3 +1,8 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 from scipy import sparse
@@ -196,3 +201,44 @@ def test_steps_counter(tiny_brain):
         tiny_brain.step()
     tiny_brain.reset()
     assert tiny_brain.steps == 0
+
+
+_THREAD_PROBE = """
+import hashlib, sys
+import numpy as np
+from src.brain.lif import FlyBrain, LIFParams, _propagate_numba
+from tests.conftest import make_meta, random_weights
+
+n = 600
+W = random_weights(n, 0.05, seed=5)
+fired = np.arange(0, n, 2, dtype=np.int64)
+current = _propagate_numba(W.indptr, W.indices, W.data, fired, n)
+brain = FlyBrain(W, make_meta(n), LIFParams(), seed=64, backend="numba")
+spikes = hashlib.sha256()
+for _ in range(30):
+    spikes.update(brain.step().tobytes())
+print(hashlib.sha256(current.tobytes()).hexdigest(), spikes.hexdigest())
+"""
+
+
+@pytest.mark.skipif(numba is None, reason="numba not installed")
+def test_kernel_is_thread_count_independent(tmp_path):
+    """The determinism guarantee has to hold across machines, so it needs two processes.
+
+    NUMBA_NUM_THREADS is read once at import, so test_determinism_same_seed — both brains
+    in one process — structurally cannot see this. When the kernel cut `fired` into
+    get_num_threads() slices, the number of float32 partial sums was a property of the
+    core count: 1/2/3/4/8/16 threads gave six distinct currents here, and on the real
+    connectome four distinct 60-step spike trains that parted company at step 30 (#11).
+    numba accepts a thread count above the core count, so both values run anywhere.
+    """
+    script = tmp_path / "thread_probe.py"
+    script.write_text(_THREAD_PROBE)
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    out = {}
+    for threads in ("1", "3"):
+        run = subprocess.run([sys.executable, str(script)], env={**env, "NUMBA_NUM_THREADS": threads},
+                             capture_output=True, text=True, timeout=300)
+        assert run.returncode == 0, run.stderr
+        out[threads] = run.stdout.strip()
+    assert out["1"] == out["3"], f"thread count changes the result:\n{out}"
