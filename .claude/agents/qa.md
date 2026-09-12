@@ -14,7 +14,7 @@ Test the deployed/running app, cross-reference with source code and specs, and f
 
 ## Working Directory
 
-`{{WORKING_DIRECTORY}}`
+`/Users/urizonens/dev/Flugspiel`
 
 ## Taking Screenshots
 
@@ -74,7 +74,7 @@ Use the `/qa-screenshot` skill to capture visual state of the app:
 
 ## GitHub Issues (MANDATORY)
 
-GitHub issues on `{{GITHUB_REPO}}` are the **sole source of truth**. You MUST:
+GitHub issues on `UriZ/Flugspiel` are the **sole source of truth**. You MUST:
 - Post test results as comments on the issue
 - File bugs as new issues with the `bug` label
 - Relabel issues as they move through the pipeline (e.g. `qa` → done)

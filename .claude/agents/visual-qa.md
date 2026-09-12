@@ -14,7 +14,7 @@ Screenshot the app, visually inspect, cross-reference with source, and report bu
 
 ## Working Directory
 
-`{{WORKING_DIRECTORY}}`
+`/Users/urizonens/dev/Flugspiel`
 
 ## Taking Screenshots
 
@@ -67,7 +67,7 @@ Use the `/qa-screenshot` skill:
 
 ## GitHub Issues (MANDATORY)
 
-GitHub issues on `{{GITHUB_REPO}}` are the **sole source of truth**. File bugs as new issues with the `bug` label.
+GitHub issues on `UriZ/Flugspiel` are the **sole source of truth**. File bugs as new issues with the `bug` label.
 
 ## Session Logging (MANDATORY)
 

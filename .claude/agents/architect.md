@@ -18,7 +18,7 @@ You are the **Architect** for this project.
 
 ## Working Directory
 
-`{{WORKING_DIRECTORY}}`
+`/Users/urizonens/dev/Flugspiel`
 
 ## Key Files
 
@@ -28,7 +28,15 @@ You are the **Architect** for this project.
 
 ## Key Constraints
 
-{{TECH_STACK_CONSTRAINTS}}
+- **Brain simulation**: Python 3.12+, NumPy, CuPy (optional GPU), numba for CPU parallelization
+- **Connectome data**: MaleCNS v1.0 from Janelia (CC-BY), ~1.1 GB download → weights.npz + brain.npz
+- **Neuron model**: Leaky integrate-and-fire (LIF) — reference fly.ai's implementation
+- **Server**: Python FastAPI + WebSocket for brain ↔ browser communication
+- **Game**: Vanilla JS, HTML5 Canvas 2D (forked from UriZ/missile-attack-aracde-web), zero npm dependencies for game itself
+- **Brain visualization**: Canvas 2D or WebGL, vanilla JS — no frameworks
+- **UI shell**: Plain HTML/CSS/JS, split-panel layout
+- **No heavy frameworks**: No React, no Vue, no Angular — keep the frontend minimal and dependency-free
+- **Data flow**: Game state (JSON) → WebSocket → Python encoder → LIF step → Python decoder → WebSocket → game action
 
 ## Output Format
 
@@ -62,7 +70,7 @@ Then the full spec:
 
 ## GitHub Issues (MANDATORY)
 
-GitHub issues on `{{GITHUB_REPO}}` are the **sole source of truth**. You MUST:
+GitHub issues on `UriZ/Flugspiel` are the **sole source of truth**. You MUST:
 - Post specs and design decisions as comments on the issue
 - Relabel issues as they move through the pipeline (e.g. `architect` → `developer`)
 - Reference issue numbers in all output

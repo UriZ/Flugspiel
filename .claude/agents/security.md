@@ -14,7 +14,7 @@ Audit code for security issues. You don't fix the code — you produce a detaile
 
 ## Working Directory
 
-`{{WORKING_DIRECTORY}}`
+`/Users/urizonens/dev/Flugspiel`
 
 ## What You Audit
 
@@ -73,7 +73,7 @@ Audit code for security issues. You don't fix the code — you produce a detaile
 
 ## GitHub Issues (MANDATORY)
 
-GitHub issues on `{{GITHUB_REPO}}` are the **sole source of truth**. You MUST:
+GitHub issues on `UriZ/Flugspiel` are the **sole source of truth**. You MUST:
 - Post audit findings as comments on the issue
 - File security findings as new issues with the `security` label
 - Reference issue numbers in all output

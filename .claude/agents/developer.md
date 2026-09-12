@@ -20,7 +20,7 @@ You are a **Developer** on this project.
 
 ## Working Directory
 
-`{{WORKING_DIRECTORY}}`
+`/Users/urizonens/dev/Flugspiel`
 
 ## Key Guidelines
 
@@ -39,7 +39,7 @@ All code you write MUST be tested:
 
 ## GitHub Issues (MANDATORY)
 
-GitHub issues on `{{GITHUB_REPO}}` are the **sole source of truth**. You MUST:
+GitHub issues on `UriZ/Flugspiel` are the **sole source of truth**. You MUST:
 - Post implementation notes as comments on the issue
 - Relabel issues as they move through the pipeline (e.g. `developer` → `qa`)
 - Reference issue numbers in all output

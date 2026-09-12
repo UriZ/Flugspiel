@@ -1,14 +1,34 @@
-# {{PROJECT_NAME}}
+# Flugspiel
 
-{{PROJECT_DESCRIPTION}}
+Fly brain connectome simulation playing arcade games — visualize 166,700 neurons driving gameplay in real time.
 
 ## Concept
 
-{{PROJECT_CONCEPT}}
+Flugspiel ("fly play" in German) wires the MaleCNS v1.0 fruit fly connectome (166,700 neurons, 25.6M synapses) to arcade games as a reservoir computer. The biological wiring runs as a leaky integrate-and-fire simulation — game state is encoded into sensory neurons, signals propagate through the real connectome, and descending/motor neuron activity is decoded into game actions. A dopamine-based reward loop lets the brain improve over time. Split-panel UI shows the brain visualization alongside the game.
 
 ## Project Structure
 
-{{PROJECT_STRUCTURE}}
+```
+Flugspiel/
+├── src/
+│   ├── brain/              # Python: connectome loading, LIF simulation, encoder/decoder
+│   │   ├── connectome.py   # Load MaleCNS data, build weight matrix
+│   │   ├── lif.py          # Leaky integrate-and-fire neuron model
+│   │   ├── encoder.py      # Game state → sensory neuron input
+│   │   ├── decoder.py      # Motor neuron output → game actions
+│   │   └── reward.py       # Dopamine reward/punishment loop
+│   ├── server/             # Python: WebSocket server bridging brain ↔ game
+│   │   └── ws_server.py
+│   ├── game/               # JS: arcade game (Missile Attack fork) with state API
+│   │   └── ...
+│   └── viz/                # JS: brain visualization panel (WebGL/Canvas)
+│       └── ...
+├── data/                   # Connectome data files (downloaded, not committed)
+├── tests/
+├── requirements.txt
+├── package.json
+└── index.html              # Split-panel UI shell
+```
 
 ## Key Files
 
@@ -121,9 +141,9 @@ The judge is a separate agent (`.claude/agents/judge.md`) that evaluates work qu
 
 ### Task Tracking via GitHub Issues (MANDATORY)
 
-All tasks MUST be tracked as GitHub issues on `{{GITHUB_REPO}}`. GitHub issues are the **sole source of truth** for task state. Do NOT use internal task systems as the primary tracker.
+All tasks MUST be tracked as GitHub issues on `UriZ/Flugspiel`. GitHub issues are the **sole source of truth** for task state. Do NOT use internal task systems as the primary tracker.
 
-#### GitHub repo: `{{GITHUB_REPO}}`
+#### GitHub repo: `UriZ/Flugspiel`
 
 #### Labels:
 - `enhancement` — new feature or feature request
@@ -143,7 +163,7 @@ All tasks MUST be tracked as GitHub issues on `{{GITHUB_REPO}}`. GitHub issues a
 3. **Developer implements**: Posts implementation notes, relabels to `qa`
 4. **QA verifies**: Reports findings. Bugs → new `bug` issues. Clean → relabels to `security` or done
 5. **Judge gates**: Run between stages. On FAIL → `judge-fail` label + feedback comment, back to previous stage
-6. **User approves**: {{GITHUB_USERNAME}} is the FINAL approver
+6. **User approves**: UriZ is the FINAL approver
 
 #### How to create issues:
 ```bash

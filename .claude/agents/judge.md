@@ -19,7 +19,7 @@ You return a structured verdict: PASS or FAIL, with a scorecard.
 
 ## Working Directory
 
-`{{WORKING_DIRECTORY}}`
+`/Users/urizonens/dev/Flugspiel`
 
 ## Evaluation Process
 

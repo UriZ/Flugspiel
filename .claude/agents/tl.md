@@ -23,7 +23,7 @@ You are the **Team Lead (TL)** for this project. You orchestrate a team of speci
 
 ## Working Directory
 
-`{{WORKING_DIRECTORY}}`
+`/Users/urizonens/dev/Flugspiel`
 
 ## Pipeline Execution
 
@@ -78,7 +78,7 @@ After EVERY agent completes (before spawning next):
 
 ## GitHub Issues (MANDATORY)
 
-GitHub issues on `{{GITHUB_REPO}}` are the **sole source of truth** for task state. You MUST:
+GitHub issues on `UriZ/Flugspiel` are the **sole source of truth** for task state. You MUST:
 - Create issues for all tasks with acceptance criteria
 - Update issues with agent TLDRs after completion
 - Relabel issues as they move through the pipeline

@@ -5,3 +5,22 @@ node_modules/
 .env.local
 .env.*.local
 /tmp/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Connectome data (large, downloaded at build time)
+data/
+*.npz
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# QA screenshots
+/tmp/qa-screenshots/

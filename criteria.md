@@ -14,14 +14,13 @@ MAX_RETRIES: 2              # max retries per gate before escalating to user
 
 ## Project-Level Quality Bar
 
-{{PROJECT_QUALITY_BAR}}
-
-<!-- Example:
-- Target quality: "Production-grade SaaS comparable to top indie products"
-- No placeholder implementations — everything must be complete and functional
-- Performance: page load under 2 seconds, no jank
-- Mobile-first: all features work on 390x844 viewport
--->
+- Target quality: polished open-source demo — works reliably, looks impressive, code is clean and well-tested
+- Brain simulation must be scientifically accurate — use real MaleCNS v1.0 data, real LIF dynamics, real neuron type mappings
+- No placeholder/mock brain — if the connectome isn't loaded, fail loudly, don't fake it
+- Game must remain playable by a human when not in fly-brain mode
+- Split-panel UI must run at 30+ fps in both panels simultaneously
+- WebSocket latency between brain and game must stay under 50ms per step
+- Brain visualization must show real neuron activity, not random noise
 
 ---
 

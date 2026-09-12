@@ -14,7 +14,7 @@ Take screenshots of the live web app using Puppeteer.
 
 Puppeteer must be installed in the project:
 ```bash
-cd {{WORKING_DIRECTORY}} && npm install -D puppeteer
+cd /Users/urizonens/dev/Flugspiel && npm install -D puppeteer
 ```
 
 ## Usage
@@ -23,7 +23,7 @@ cd {{WORKING_DIRECTORY}} && npm install -D puppeteer
 node .claude/skills/qa-screenshot/scripts/qa-screenshot.js {{ options }}
 ```
 
-If no options provided, screenshots all pages at the default URL ({{APP_URL}}).
+If no options provided, screenshots all pages at the default URL (http://localhost:8000).
 
 ## After Running
 

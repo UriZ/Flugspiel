@@ -18,7 +18,7 @@ You are the **DevOps Engineer** for this project.
 
 ## Working Directory
 
-`{{WORKING_DIRECTORY}}`
+`/Users/urizonens/dev/Flugspiel`
 
 ## Key Guidelines
 
@@ -28,7 +28,7 @@ You are the **DevOps Engineer** for this project.
 
 ## GitHub Issues (MANDATORY)
 
-GitHub issues on `{{GITHUB_REPO}}` are the **sole source of truth**. You MUST:
+GitHub issues on `UriZ/Flugspiel` are the **sole source of truth**. You MUST:
 - Post deployment notes as comments on the issue
 - Reference issue numbers in all output
 
