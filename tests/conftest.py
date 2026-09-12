@@ -23,8 +23,18 @@ def make_meta(n, cell_type=None, side=None, nt_sign=None):
 
 
 def make_brain(W, meta=None, params=EXACT, **kw):
-    W = sparse.csc_matrix(np.asarray(W, dtype=np.float32))
+    W = sparse.csc_matrix(W, dtype=np.float32)  # accepts dense or sparse
     return FlyBrain(W, meta or make_meta(W.shape[0]), params, **kw)
+
+
+def random_weights(n, density, seed=7):
+    """Signed and row-normalised like the real matrix."""
+    rng = np.random.default_rng(seed)
+    W = sparse.random(n, n, density=density, format="csc", dtype=np.float32, random_state=rng)
+    W.data = (W.data * 2 - 1).astype(np.float32)
+    rows = np.bincount(W.indices, weights=np.abs(W.data), minlength=n)
+    W.data /= np.maximum(rows[W.indices], 1e-6).astype(np.float32)
+    return W
 
 
 @pytest.fixture
@@ -39,12 +49,7 @@ def tiny_brain():
 @pytest.fixture
 def random_brain():
     """200 neurons, ~5% connectivity, signed and row-normalised like the real matrix."""
-    rng = np.random.default_rng(7)
-    W = sparse.random(200, 200, density=0.05, format="csc", dtype=np.float32, random_state=rng)
-    W.data = (W.data * 2 - 1).astype(np.float32)
-    rows = np.bincount(W.indices, weights=np.abs(W.data), minlength=200)
-    W.data /= np.maximum(rows[W.indices], 1e-6).astype(np.float32)
-    return W
+    return random_weights(200, 0.05)
 
 
 @pytest.fixture

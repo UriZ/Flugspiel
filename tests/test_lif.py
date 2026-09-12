@@ -3,7 +3,7 @@ import pytest
 from scipy import sparse
 
 from src.brain.lif import FlyBrain, LIFParams, _propagate_numpy, numba
-from tests.conftest import EXACT, make_brain, make_meta
+from tests.conftest import EXACT, make_brain, make_meta, random_weights
 
 ZERO = np.zeros((1, 1), dtype=np.float32)
 
@@ -159,6 +159,24 @@ def test_backend_equivalence(random_brain):
     fired = np.arange(0, 200, 3, dtype=np.int64)
     fast = make_brain(random_brain.toarray(), backend="numba")._synaptic_input(fired)
     slow = _propagate_numpy(random_brain, fired, 200)
+    assert np.allclose(fast, slow, atol=1e-6)
+
+
+@pytest.mark.skipif(numba is None, reason="numba not installed")
+def test_backend_equivalence_under_thread_contention():
+    """The 200-neuron fixture above is too small to catch a broken parallel reduction.
+
+    Sharing one accumulator between threads (`buf[0, ...]` instead of `buf[t, ...]`) is a
+    lost-update race, and it leaves the test above green: 67 fired columns over ~2,000
+    nonzeros, so the threads rarely collide. At this size that mutation lands 0.058-0.199
+    off the numpy kernel — measured over 20 runs each at 2, 4 and 16 threads, never once
+    inside the tolerance — against a 1.2e-7 baseline for the correct kernel (#10).
+    """
+    n = 2000
+    W = random_weights(n, 0.02, seed=5)
+    fired = np.arange(0, n, 2, dtype=np.int64)
+    fast = make_brain(W, make_meta(n), backend="numba")._synaptic_input(fired)
+    slow = _propagate_numpy(W, fired, n)
     assert np.allclose(fast, slow, atol=1e-6)
 
 

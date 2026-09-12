@@ -1,2 +1,6 @@
 -r requirements.txt
+-r requirements-fast.txt  # numba: without it the only tests that exercise the default
+                          # backend skip, so the production kernel ships untested. Safe to
+                          # require here because the project targets Python 3.12+, where
+                          # numba 0.61 has wheels; the base install stays numba-free.
 pytest>=8.0
