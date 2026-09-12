@@ -227,7 +227,22 @@ if (NO_BRAIN) {
     // Drive the shell through its own controls, exactly as a user would.
     const btn = (t) => [...document.querySelectorAll('.controls button')].find((b) => b.textContent.startsWith(t));
     btn('mode').click();
-    btn('start').click();
+    // `start` is disabled until the bar's next render re-evaluates the mode, and a click
+    // on a disabled button does not fire. Clicking both in the same turn silently left
+    // the game on the start screen and every action rejected `not_playing` — with the
+    // step counter still ticking, which is what made the first version of this check
+    // pass while proving nothing.
+    await new Promise((r) => requestAnimationFrame(r));
+    await new Promise((r) => setTimeout(r, 120));
+    const start = btn('start');
+    if (start.disabled) return { err: 'start button still disabled after entering fly mode' };
+    start.click();
+    const t1 = performance.now();
+    while (fl.host.game.state !== 'playing' && performance.now() - t1 < 5000) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (fl.host.game.state !== 'playing') return { err: `game never reached 'playing' (state=${fl.host.game.state})` };
+    const base = fl.bridge.getStats();
     await new Promise((r) => setTimeout(r, secs * 1000));
     const read = () => ({ conn: document.getElementById('stat-conn').textContent,
                           step: document.getElementById('stat-step').textContent,
@@ -238,9 +253,33 @@ if (NO_BRAIN) {
     await new Promise((r) => setTimeout(r, 1000));
     const b = read();
     const f = fl.client.latest();
-    return { a, b, stats: fl.client.stats(), backend: fl.client.ready().backend,
+
+    // R4: `popcount x sim_hz` is normative and `popcount x observed frame rate` is the
+    // plausible-looking wrong answer. Recompute BOTH from frames sampled here and check
+    // the bar against the first while confirming the second would read differently —
+    // otherwise this check cannot tell the two estimators apart.
+    const { fmtRate } = await import('/src/ui/status-bar.js');
+    const seen = [];
+    let lastStep = -1;
+    const t2 = performance.now();
+    while (seen.length < 20 && performance.now() - t2 < 4000) {
+      const g = fl.client.latest();
+      if (g && g.step !== lastStep) { lastStep = g.step; seen.push({ pop: g.spikes.popcount, ms: g.recvMs, simHz: g.meta.sim_hz }); }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const meanPop = seen.reduce((x, r) => x + r.pop, 0) / seen.length;
+    const simHz = seen[seen.length - 1].simHz;
+    const obsHz = (seen.length - 1) / ((seen[seen.length - 1].ms - seen[0].ms) / 1000);
+    const formula = { shown: document.getElementById('stat-spikes').textContent,
+                      correct: fmtRate(meanPop * simHz), naive: fmtRate(meanPop * obsHz),
+                      meanPop: Math.round(meanPop), simHz, obsHz, n: seen.length };
+    const bstats = fl.bridge.getStats();
+    return { a, b, formula, stats: fl.client.stats(), backend: fl.client.ready().backend,
              simHz: f.meta.sim_hz, pop: f.spikes.popcount, nbytes: f.spikes.bytes.length,
-             gameScore: fl.bridge.getState().score, bstats: fl.bridge.getStats(),
+             gameScore: fl.bridge.getState().score,
+             accepted: bstats.actionsAccepted - base.actionsAccepted,
+             rejected: bstats.actionsRejected - base.actionsRejected,
+             emitted: bstats.emitted - base.emitted, sendErrors: bstats.sendErrors,
              mode: fl.bridge.getMode(), phase: fl.host.game.state };
   }, SECONDS);
 
@@ -250,9 +289,15 @@ if (NO_BRAIN) {
     skip('A5', 'A2 did not connect');
   } else {
     const stepA = +live.a.step, stepB = +live.b.step;
+    // A ticking step counter proves the socket is alive, NOT that the loop is closed:
+    // the brain steps on its own and the bar looks identical while every action is
+    // bouncing off a start screen. `accepted` and `phase` are the discriminator.
     check('A2', live.a.conn === `live · ${live.backend}` && Number.isInteger(stepA) && stepB > stepA
-            && live.a.score !== '—' && live.a.spikes !== '—' && live.stats.bad === 0,
-      `conn="${live.a.conn}" step ${stepA} -> ${stepB} (+${stepB - stepA} in 1 s) score="${live.a.score}" (game ${live.gameScore}) spikes/s="${live.b.spikes}" [pop ${live.pop} x sim_hz ${live.simHz}] bad frames=${live.stats.bad} frames=${live.stats.frames} emitted=${live.bstats.emitted} rejected=${live.bstats.actionsRejected} phase=${live.phase}`);
+            && live.a.score !== '—' && live.a.spikes !== '—' && live.stats.bad === 0
+            && live.phase === 'playing' && live.accepted > 0 && live.rejected === 0
+            && live.sendErrors === 0 && live.formula.shown === live.formula.correct
+            && live.formula.naive !== live.formula.correct,
+      `conn="${live.a.conn}" step ${stepA} -> ${stepB} (+${stepB - stepA} in 1 s) score="${live.a.score}" (game ${live.gameScore}) spikes/s="${live.b.spikes}" [mean pop ${live.pop} x sim_hz ${live.simHz.toFixed(2)}] title="${live.b.title}" | loop: phase=${live.phase} emitted=${live.emitted} accepted=${live.accepted} rejected=${live.rejected} sendErrors=${live.sendErrors} frames=${live.stats.frames} bad=${live.stats.bad}`);
 
     // A5 before A2b, while frames are still arriving.
     const st = (t) => { const d = []; for (let i = 1; i < t.length; i++) d.push(t[i] - t[i - 1]);
