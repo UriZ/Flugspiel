@@ -263,8 +263,9 @@ class Session:
         rt, dec, enc, brain = self.rt, self.rt.decoder, self.rt.encoder, self.rt.brain
         dt, period = brain.params.dt, 1.0 / CONFIG.sim_hz
         frame, state = enc.neutral(), None
-        t0 = last_decode = time.perf_counter()
-        next_t, steps = t0, 0
+        last_decode = next_t = time.perf_counter()
+        t_first: float | None = None   # set after step 1: the rate is over intervals,
+        steps = 0                      # not over steps, or the first sample reads high
 
         # The generation guard, not a lock: an evicted handler's loop must stop stepping
         # the shared brain. Both loops are tasks on one event loop and brain.step()
@@ -282,13 +283,15 @@ class Session:
             fired = brain.step(inject=frame.inject)
             dec.observe(fired, dt)
             steps += 1
+            if t_first is None:
+                t_first = time.perf_counter()
 
             if self.credit:
                 self.credit = 0
                 now = time.perf_counter()
                 action = dec.decode(state or {}, min(max(now - last_decode, period), 1.0))
                 last_decode = now
-                sim_hz = steps / max(1e-9, now - t0)
+                sim_hz = (steps - 1) / (now - t_first) if steps > 1 else 0.0
                 payload = json.dumps(self._frame(action, fired, sim_hz), allow_nan=False)
                 try:
                     await self.ws.send_text(payload)
