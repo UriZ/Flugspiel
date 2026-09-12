@@ -2,7 +2,7 @@
 // its own status bar. Testing is suspended; this is not a test, it is the observation
 // harness for §11's restated acceptance criteria.
 //
-//   node tools/spike/shell-verify.mjs [--brain-port 8123] [--seconds 12] [--no-brain]
+//   node tools/spike/shell-verify.mjs [--brain-port 8456] [--seconds 12] [--no-brain]
 //
 // Distinct from `shell-e2e.mjs`, which proves the *design* against an inline fixture
 // document: that probe opens its own socket and installs its own bridge transport, so
@@ -28,6 +28,7 @@
 //
 // Exit 0 iff every check passes. --no-brain skips A2/A2b/A5 and reports them SKIP.
 
+import { spawn } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -40,7 +41,7 @@ const ROOT = path.resolve(import.meta.dirname, '..', '..');
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf('--' + k); return i === -1 ? d : argv[i + 1]; };
-const BRAIN_PORT = +arg('brain-port', 8123);
+const BRAIN_PORT = +arg('brain-port', 8456);
 const SECONDS = +arg('seconds', 12);
 const NO_BRAIN = argv.includes('--no-brain');
 const HEADFUL = argv.includes('--headful');
@@ -67,10 +68,49 @@ const server = http.createServer(async (req, res) => {
 await new Promise((r) => server.listen(0, r));
 const port = server.address().port;
 
+// The brain server is OURS: A2b has to make it genuinely go away, and evicting with a
+// second socket would exercise 4409 (`superseded`, which must NOT auto-retry) rather
+// than the ordinary drop the criterion is about.
+let brain = null;
+async function startBrain() {
+  brain = spawn(path.join(ROOT, '.venv/bin/python'),
+    [path.join(ROOT, 'src/server/ws_server.py'), '--port', String(BRAIN_PORT), '--log-level', 'warning'],
+    { cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'] });
+  const err = [];
+  brain.stderr.on('data', (d) => err.push(String(d)));
+  const t0 = Date.now();
+  while (Date.now() - t0 < 180000) {
+    if (brain.exitCode !== null) throw new Error(`ws_server exited ${brain.exitCode}: ${err.join('').slice(-400)}`);
+    try {
+      const r = await fetch(`http://127.0.0.1:${BRAIN_PORT}/healthz`);   // node, not the browser: no CORS here
+      const j = await r.json();
+      // Somebody else's server on this port answers too, and a 404 body or a directory
+      // listing would otherwise be polled for three minutes before failing obscurely.
+      if (typeof j.backend !== 'string') {
+        throw new Error(`:${BRAIN_PORT} answered /healthz but is not ws_server.py: ${JSON.stringify(j).slice(0, 120)}`);
+      }
+      if (j.ready) return { ...j, waited_s: +((Date.now() - t0) / 1000).toFixed(1) };
+    } catch (e) {
+      if (String(e.message).includes('is not ws_server.py')) throw e;
+      /* otherwise: uvicorn does not accept until the lifespan handler finishes */
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error('brain server never became ready');
+}
+const stopBrain = () => { if (brain && brain.exitCode === null) brain.kill('SIGKILL'); };
+process.on('exit', stopBrain);
+
 const results = [];
 const check = (id, ok, detail) => { results.push({ id, ok, detail }); console.log(`${id}  ${detail}\n   -> ${ok ? 'PASS' : 'FAIL'}`); };
 const skip = (id, why) => { results.push({ id, ok: true, skip: true, detail: why }); console.log(`${id}  SKIP  ${why}`); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+let health = null;
+if (!NO_BRAIN) {
+  health = await startBrain();
+  console.log(`brain server on :${BRAIN_PORT} ready in ${health.waited_s}s — backend=${health.backend} ac2_capable=${health.ac2_capable} startup_s=${health.startup_s}\n`);
+}
 
 const browser = await puppeteer.launch({ headless: !HEADFUL, args: ['--no-sandbox'] });
 const page = await browser.newPage();
@@ -163,12 +203,12 @@ const a6 = await page.evaluate(async () => {
   const m = await import('/src/ui/brain-client.js');
   const at = (q) => m.resolveUrl(q);
   return { evil: at('?brain=ws://evil.example.com/brain'), http: at('?brain=http://127.0.0.1:9/x'),
-           junk: at('?brain=not a url'), none: at(''), ok: at('?brain=ws://127.0.0.1:8123/brain'),
-           v6: at('?brain=ws://[::1]:8123/brain') };
+           junk: at('?brain=not a url'), none: at(''), ok: at('?brain=ws://127.0.0.1:8456/brain'),
+           v6: at('?brain=ws://[::1]:8456/brain') };
 });
 const DEF = 'ws://127.0.0.1:8000/brain';
 check('A6', a6.evil === DEF && a6.http === DEF && a6.junk === DEF && a6.none === DEF
-        && a6.ok.startsWith('ws://127.0.0.1:8123') && a6.v6.startsWith('ws://[::1]:8123'),
+        && a6.ok.startsWith('ws://127.0.0.1:8456') && a6.v6.startsWith('ws://[::1]:8456'),
   `off-loopback -> ${a6.evil} | http: -> ${a6.http} | junk -> ${a6.junk} | loopback kept -> ${a6.ok}, ${a6.v6}`);
 
 // ── A2 / A2b / A5 need a live brain ──────────────────────────────────────────
@@ -225,18 +265,14 @@ if (NO_BRAIN) {
       `shell ${shellFps.fps} fps (p95 ${shellFps.p95} ms) / game ${gameFps.fps} fps (p95 ${gameFps.p95} ms), bar 30, loadavg ${os.loadavg().map((n) => n.toFixed(2)).join(' ')}`);
 
     // A2b — drop the socket from under the shell and watch the bar.
-    const after = await page.evaluate(async () => {
-      const before = document.getElementById('stat-step').textContent;
-      // Close from the server's side of the abstraction: 1006-ish, i.e. not deliberate,
-      // so the shell must schedule a retry rather than go quiet.
-      window.flugspiel.client.__forceClose?.();
-      const ws = window.flugspiel.client;
-      ws.sendState({ seq: -1 });           // no-op if already closed
-      await new Promise((r) => setTimeout(r, 2500));
-      return { before, conn: document.getElementById('stat-conn').textContent,
-               step: document.getElementById('stat-step').textContent,
-               state: ws.state() };
-    });
+    const before = await page.evaluate(() => document.getElementById('stat-step').textContent);
+    stopBrain();                       // the real thing: the server goes away mid-loop
+    await sleep(2500);
+    const after = await page.evaluate(() => ({
+      conn: document.getElementById('stat-conn').textContent,
+      step: document.getElementById('stat-step').textContent,
+      state: window.flugspiel.client.state() }));
+    after.before = before;
     check('A2b', /^reconnecting in \d/.test(after.conn) && after.step === after.before && after.step !== '—',
       `after the server goes away: conn="${after.conn}" (state=${after.state}), step "${after.before}" -> "${after.step}" (frozen, not blanked)`);
   }
@@ -248,4 +284,5 @@ if (pageErrors.length) { failed = true; console.log('page errors:'); for (const 
 console.log(`${results.filter((r) => r.ok && !r.skip).length} pass, ${results.filter((r) => !r.ok).length} fail, ${results.filter((r) => r.skip).length} skip`);
 await browser.close();
 server.close();
+stopBrain();
 process.exit(failed ? 1 : 0);
