@@ -44,13 +44,43 @@ def test_threshold_is_inclusive():
 def test_excitatory_propagation(tiny_brain):
     tiny_brain.fired = np.array([0], dtype=np.int64)
     tiny_brain.step()
-    assert tiny_brain.v[1] == pytest.approx(tiny_brain.params.gain * 0.5)
+    assert tiny_brain.v[1] == pytest.approx(0.5)  # w=0.5, EXACT.gain=1
 
 
 def test_inhibitory_propagation(tiny_brain):
     tiny_brain.fired = np.array([0], dtype=np.int64)
     tiny_brain.step()
-    assert tiny_brain.v[2] == pytest.approx(-tiny_brain.params.gain * 0.5)
+    assert tiny_brain.v[2] == pytest.approx(-0.5)
+
+
+@pytest.mark.parametrize("gain, expected", [(0.0, 0.0), (0.5, 0.1), (3.0, 0.6)])
+def test_gain_scales_the_synaptic_term(gain, expected):
+    """Pins the magnitude of `gain * (W @ spikes)`, not just its presence and sign.
+
+    The expectations are literals. Deriving them from `params.gain` — as the two tests
+    above used to — makes the assertion self-referential, and the only other test that
+    varied gain used the multiplicative identity, so deleting the factor outright left
+    the suite green (#9).
+    """
+    W = np.zeros((2, 2), dtype=np.float32)
+    W[1, 0] = 0.2
+    brain = make_brain(W, make_meta(2), params=LIFParams(gain=gain, tonic=0.0, noise_hz=0.0))
+    brain.fired = np.array([0], dtype=np.int64)
+    brain.step()
+    assert brain.v[1] == pytest.approx(expected)
+
+
+def test_default_gain_matches_the_documented_calibration():
+    """gain=3.0 is calibrated in LIFParams' docstring against rows normalised to |w| sum 1:
+    a neuron whose whole input population fires receives ~3x threshold. Here the input row
+    sums to 0.2, so the literal 0.6 pins the default itself — retuning it fails here.
+    """
+    W = np.zeros((5, 5), dtype=np.float32)
+    W[4, :4] = 0.05
+    brain = make_brain(W, make_meta(5), params=LIFParams(tonic=0.0, noise_hz=0.0))
+    brain.fired = np.arange(4, dtype=np.int64)
+    brain.step()
+    assert brain.v[4] == pytest.approx(0.6)
 
 
 def test_no_input_no_current(tiny_brain):

@@ -51,11 +51,15 @@ def test_throughput(real_brain):
 
 
 def test_activity_stable(real_brain):
-    """No die-out, no runaway.
+    """No die-out, no runaway, and the synaptic drive is at its calibrated strength.
 
-    Deviates from the spec's "300 steps, every step in (0.005, 0.20)": from v=0 the
+    Deviates from the spec's "300 steps, every step in (0.005, 0.20)" twice. From v=0 the
     network needs ~15 steps to climb to threshold, so the first steps are legitimately
-    at 0. The 20 warm-up steps cover that ramp, which is asserted separately.
+    at 0; the 20 warm-up steps cover that ramp, which is asserted separately. And the
+    band is tightened around the documented ~7.7% operating point: the spec's lower bound
+    of 0.5% sits on the pure-noise floor (0.56% with no synaptic input at all), so it only
+    distinguished "some drive" from "none" — gain=1.0 fires at 1.0% and passed it (#9).
+    Measured over 300 steps on both backends: 7.06%-8.93%.
     """
     real_brain.reset()
     warmup = [real_brain.step() is not None and real_brain.rates() for _ in range(20)]
@@ -64,4 +68,4 @@ def test_activity_stable(real_brain):
     for _ in range(300):
         real_brain.step()
         rates.append(real_brain.rates())
-    assert 0.005 < min(rates) and max(rates) < 0.20
+    assert 0.04 < min(rates) and max(rates) < 0.15, f"{min(rates):.4f}-{max(rates):.4f} is off the ~7.7% calibration"
