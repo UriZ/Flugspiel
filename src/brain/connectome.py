@@ -312,9 +312,27 @@ def download(data_dir: Path | None = None, *, force: bool = False) -> Path:
 
 
 def _require(raw: Path, name: str) -> Path:
+    """Return the path to a raw source file, re-checked against its pinned size+sha256.
+
+    Existence alone is not enough. `download()` verifies before `os.replace`, so a file
+    it completed is a verified file — but `build()` is a documented public entry point
+    and can be called without `download()`, against a hand-populated raw/, a shared
+    cache, a Docker volume or a CI artifact. Whatever sits there otherwise goes straight
+    into `feather.read_table` and `pa.ipc.open_file` (#19). That is the second half of
+    the #16 chain: an unverified Arrow IPC file parsed by a pyarrow version carrying an
+    arbitrary-code-execution advisory on IPC reads. Fixing either link breaks the chain;
+    both are cheap.
+
+    Cost: three sha256 passes over ~1.1 GB (~2-3 s) on every build(), including the
+    main() path where download() just hashed the same bytes. That is against a build
+    already taking minutes, so the duplicate is not worth the coupling of threading
+    digests out of download(). Deliberately has no `verify=False` escape hatch — a kwarg
+    that switches off a security check is a footgun, and nothing needs one.
+    """
     path = raw / name
     if not path.exists():
         raise ConnectomeError(f"{path} not found; run: {_BUILD_CMD}")
+    _verify(path, SOURCES[name])
     return path
 
 

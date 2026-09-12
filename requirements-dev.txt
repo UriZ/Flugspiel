@@ -3,4 +3,7 @@
                           # backend skip, so the production kernel ships untested. Safe to
                           # require here because the project targets Python 3.12+, where
                           # numba 0.61 has wheels; the base install stays numba-free.
-pytest>=8.0
+pytest>=8.4               # raises the floor off the 8.0.0 line carrying CVE-2025-71176
+packaging>=23.0           # tests/test_connectome.py parses the pinned dependency
+                          # constraints (#16); a direct import is a direct dependency,
+                          # not something to inherit transitively from pytest.

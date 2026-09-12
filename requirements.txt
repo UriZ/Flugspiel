@@ -1,8 +1,21 @@
+# Floors here are security-relevant, not only compatibility (#16). Upper bounds keep a
+# future major from being auto-accepted by a project whose entire input is a 1.1 GB
+# third-party download. Note the remaining gap: there is no hash-pinned lockfile, so the
+# *download* is sha256-pinned (SOURCES in src/brain/connectome.py) while the parsers that
+# read it are not. `pip-compile --generate-hashes` or `uv lock` would close that.
 numpy>=1.26
 scipy>=1.11
 pandas>=2.1
-pyarrow>=14.0
-fastapi>=0.110
+# >=14.0.1 clears CVE-2023-47248 (arbitrary code execution deserialising an Arrow IPC
+# stream — exactly the _edges()/feather.read_table() path); >=17.0.0 clears
+# CVE-2024-52338; >=23.0.1 clears CVE-2026-25087 (use-after-free reading an IPC file
+# with pre-buffering). `pyarrow>=14.0` admitted every one of those: a fresh install
+# resolves to the newest release, but an environment that *already* has an old pyarrow
+# (a common transitive dependency of data/ML stacks) satisfies the constraint and pip
+# installs nothing.
+pyarrow>=23.0.1,<26
+# >=0.115.2 requires starlette>=0.40.0, clearing CVE-2024-47874; fastapi>=0.110 permitted
+# starlette 0.36.x. Used by tools/spike/*.py today, and by src/server/ from #4.
+fastapi>=0.115.2
 uvicorn[standard]>=0.27
 websockets>=12.0
-requests>=2.31

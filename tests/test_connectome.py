@@ -1,4 +1,5 @@
 import hashlib
+import importlib.metadata
 import os
 import subprocess
 import sys
@@ -6,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from packaging.requirements import Requirement
 
 from src.brain import connectome as c
 from tests.conftest import make_meta
@@ -244,3 +246,126 @@ def test_brainmeta_from_npz_rejects_a_tampered_file(tmp_path):
     np.savez_compressed(tmp_path / "brain.npz", **arrays)
     with pytest.raises(c.ConnectomeError, match="position has shape"):
         c.BrainMeta.from_npz(tmp_path / "brain.npz")
+
+
+# ------------------------------------------------------ #16 dependency constraints
+
+
+def declared(filename):
+    """Parse a requirements file into {name: SpecifierSet}, ignoring comments and -r."""
+    out = {}
+    for line in (Path(__file__).resolve().parents[1] / filename).read_text().splitlines():
+        line = line.split("#")[0].strip()
+        if line and not line.startswith("-r"):
+            req = Requirement(line)
+            out[req.name] = req.specifier
+    return out
+
+
+@pytest.mark.parametrize("bad,advisory", [
+    ("14.0.0", "CVE-2023-47248 arbitrary code execution on Arrow IPC read"),
+    ("16.1.0", "CVE-2024-52338"),
+    ("22.0.0", "CVE-2026-25087 use-after-free on IPC read"),
+    ("23.0.0", "CVE-2026-25087 use-after-free on IPC read"),
+])
+def test_pyarrow_floor_excludes_advisory_versions(bad, advisory):
+    """The pyarrow floor is a security decision, not a compatibility one (#16).
+
+    _edges() and build() feed a 1 GB downloaded Arrow IPC file to this library, so the
+    versions carrying IPC-read advisories must not be installable. `pyarrow>=14.0`
+    admitted all of these.
+    """
+    spec = declared("requirements.txt")["pyarrow"]
+    assert not spec.contains(bad, prereleases=True), f"pyarrow {bad} permitted: {advisory}"
+
+
+def test_pyarrow_range_admits_a_known_good_version():
+    """Guards over-tightening — the constraint must still resolve to something."""
+    spec = declared("requirements.txt")["pyarrow"]
+    assert spec.contains("23.0.1") and spec.contains("25.0.1")
+
+
+def test_pyarrow_has_an_upper_bound():
+    spec = declared("requirements.txt")["pyarrow"]
+    assert any(s.operator in ("<", "<=") for s in spec), "a new major would be auto-accepted"
+
+
+def test_requests_is_not_declared():
+    """requests is imported nowhere in the repo; connectome.py uses urllib.request (#16)."""
+    for f in ("requirements.txt", "requirements-dev.txt", "requirements-fast.txt"):
+        assert "requests" not in declared(f), f"{f} declares an unused dependency"
+
+
+def test_declared_dependencies_are_satisfied_by_this_environment():
+    """A constraint the test env violates is a constraint nothing has actually exercised."""
+    violations = []
+    for f in ("requirements.txt", "requirements-dev.txt", "requirements-fast.txt"):
+        for name, spec in declared(f).items():
+            try:
+                have = importlib.metadata.version(name)
+            except importlib.metadata.PackageNotFoundError:
+                continue  # optional extra (numba on a platform without a wheel)
+            if not spec.contains(have, prereleases=True):
+                violations.append(f"{f}: {name}{spec} but {have} installed")
+    assert not violations, violations
+
+
+# ------------------------------------------------------ #19 _require re-verifies
+
+
+def pinned(monkeypatch, tmp_path, name, body, size=None):
+    """Put `body` in raw/<name> under a SOURCES entry pinning `size` and body's real hash."""
+    raw = tmp_path / "raw"
+    raw.mkdir(exist_ok=True)
+    (raw / name).write_bytes(body)
+    monkeypatch.setitem(c.SOURCES, name,
+                        c.Source("", len(body) if size is None else size,
+                                 hashlib.sha256(body).hexdigest()))
+    return raw
+
+
+def test_require_rejects_a_tampered_file(tmp_path, monkeypatch):
+    """Right size, wrong content — the size check passes and the hash must catch it."""
+    raw = pinned(monkeypatch, tmp_path, "f", b"the real bytes")
+    (raw / "f").write_bytes(b"tampered!!!!!!")  # same length, different content
+    with pytest.raises(c.ConnectomeError, match="sha256"):
+        c._require(raw, "f")
+
+
+def test_require_rejects_a_wrong_size_file(tmp_path, monkeypatch):
+    raw = pinned(monkeypatch, tmp_path, "f", b"short", size=999)
+    with pytest.raises(c.ConnectomeError, match="bytes"):
+        c._require(raw, "f")
+
+
+def test_require_accepts_a_matching_file(tmp_path, monkeypatch):
+    """Guards against the check being accidentally inverted (#19)."""
+    raw = pinned(monkeypatch, tmp_path, "f", b"the real bytes")
+    assert c._require(raw, "f") == raw / "f"
+
+
+def test_require_missing_file_still_raises(tmp_path, monkeypatch):
+    raw = pinned(monkeypatch, tmp_path, "f", b"x")
+    (raw / "f").unlink()
+    with pytest.raises(c.ConnectomeError, match="not found"):
+        c._require(raw, "f")
+
+
+def test_build_never_hands_an_unverified_file_to_pyarrow(tmp_path, monkeypatch):
+    """The #16+#19 chain, end to end: build() must abort before any Arrow parse.
+
+    Patches feather.read_table to fail loudly, so reaching pyarrow is distinguishable
+    from a verification failure.
+    """
+    from pyarrow import feather
+
+    def explode(*a, **k):
+        raise AssertionError("pyarrow parsed an unverified file")
+
+    monkeypatch.setattr(feather, "read_table", explode)
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    for name in c.SOURCES:
+        (raw / name).write_bytes(b"NOT THE REAL FEATHER FILE")
+    with pytest.raises(c.ConnectomeError, match="bytes"):
+        c.build(tmp_path)
