@@ -1,0 +1,7 @@
+# Optional numba fast path for the LIF kernel: ~200 steps/s instead of ~20.
+# Not required — src/brain/lif.py falls back to pure NumPy, which already clears the
+# 10 steps/s target. Kept out of requirements.txt because numba has no wheel on every
+# platform/Python combination and would otherwise break a plain `pip install`.
+-r requirements.txt
+numba==0.61.*
+numpy<2.3   # numba 0.61 requires numpy<2.3; the cap travels with numba, not the base install
