@@ -76,7 +76,7 @@ if numba is not None:
             for m in range(k * t // threads, k * (t + 1) // threads):
                 j = fired[m]
                 for p in range(indptr[j], indptr[j + 1]):
-                    buf[0, indices[p]] += data[p]
+                    buf[t, indices[p]] += data[p]
         out = np.zeros(n, dtype=np.float32)
         for i in numba.prange(n):
             acc = np.float32(0.0)
