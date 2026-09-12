@@ -511,10 +511,12 @@ def test_stream_resumes_when_206_range_matches(tmp_path):
 def test_stream_aborts_on_a_slow_drip(tmp_path, monkeypatch):
     """`timeout=60` is per socket read, so a drip server never trips it (#17).
 
-    Constants are monkeypatched to keep the test sub-second; the guard under test is the
-    average-rate floor, not the specific numbers.
+    `_CHUNK` is deliberately *not* patched, and the assertion is on *when* the abort
+    lands. `resp.read(_CHUNK)` fills its argument, so at the production 8 MB the guard is
+    unreachable for as long as the connection stays open; the old `_CHUNK = 1` patch is
+    what let this test pass against that broken code. The server therefore keeps dripping
+    well past the floor, so a guard that only runs once the server gives up fails here.
     """
-    monkeypatch.setattr(c, "_CHUNK", 1)
     monkeypatch.setattr(c, "_RATE_GRACE", 0.2)
     monkeypatch.setattr(c, "_MIN_RATE", 1 << 20)
     part = tmp_path / "f.part"
@@ -523,15 +525,23 @@ def test_stream_aborts_on_a_slow_drip(tmp_path, monkeypatch):
         h.send_response(200)
         h.send_header("Content-Length", str(1 << 20))
         h.end_headers()
-        for _ in range(60):
-            h.wfile.write(b"x")
-            h.wfile.flush()
+        for _ in range(300):  # 6 s of drip, vs the 0.2 s grace
+            try:
+                h.wfile.write(b"x")
+                h.wfile.flush()
+            except OSError:   # the client aborted and closed the socket
+                return
             time.sleep(0.02)
 
     with serving(respond) as (_srv, url):
+        began = time.monotonic()
         with pytest.raises(c.ConnectomeError, match=r"below the \d+ B/s floor"):
             c._stream(c.Source(url, 1 << 20, UNPINNED_HASH), part, "f")
-    assert not part.exists()
+        elapsed = time.monotonic() - began
+    assert elapsed < 2.0, f"guard must fire mid-drip, not at EOF (took {elapsed:.1f}s)"
+    # Unlike the oversize abort, the prefix is kept: those bytes are good and
+    # `download()` retries, so deleting them would mean zero net progress ever.
+    assert part.stat().st_size > 0, "a rate abort must leave the prefix for resume"
 
 
 def test_stream_allows_a_fast_transfer_under_the_same_guard(tmp_path, monkeypatch):

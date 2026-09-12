@@ -122,10 +122,12 @@ class BrainMeta:
 
     _KEYS = ("ids", "cell_type", "side", "superclass", "nt", "nt_sign", "position", "ol_hex")
 
-    # `n` bounds every downstream allocation — the numba kernel allocates a
-    # PARTITIONS x n float32 buffer *per step*, so an unvalidated n out of a crafted
-    # brain.npz is a memory-exhaustion knob (n = 10**9 asks for 64 GB/step). The real
-    # connectome is 166,700; 5M admits a larger future dataset but not an absurd one.
+    # A plausibility bound, not a resource guard: `from_npz` materialises all eight
+    # arrays before `_validate` runs, so a crafted brain.npz has already spent its memory
+    # by the time we look (a 31 MB file declaring n = 20M peaks at ~1 GB RSS, and n = 10**9
+    # dies as MemoryError inside the reader). What the bound buys is cross-array shape and
+    # dtype consistency against a sane `n`. The real connectome is 166,700; 5M admits a
+    # larger future dataset but not an absurd one.
     _MAX_NEURONS = 5_000_000
     _SHAPES = {"position": 3, "ol_hex": 2}  # (n, k); every other array is (n,)
     _DTYPE_KINDS = {"ids": "i", "nt_sign": "f", "position": "f", "ol_hex": "f"}
@@ -311,7 +313,11 @@ def _stream(src: Source, part: Path, name: str) -> None:
         mark = 0
         began = time.monotonic()
         with _open_nofollow(part, append=bool(start)) as f:
-            while chunk := resp.read(_CHUNK):
+            # read1, not read: `read(_CHUNK)` *fills* _CHUNK bytes, so against a drip
+            # server it blocks in the kernel for ~1024 s at the rate floor and the guards
+            # below are never evaluated. read1 returns what is already buffered, so the
+            # loop iterates per TCP segment and the guards actually run.
+            while chunk := resp.read1(_CHUNK):
                 f.write(chunk)
                 got += len(chunk)
                 if got > src.size:
@@ -326,8 +332,12 @@ def _stream(src: Source, part: Path, name: str) -> None:
                         f"(got {got}); refusing to continue")
                 elapsed = time.monotonic() - began
                 if elapsed > _RATE_GRACE and (got - start) / elapsed < _MIN_RATE:
+                    # Keep the .part, unlike the oversize abort above: these are good
+                    # bytes that hash into the final file, and `download()` retries three
+                    # times. Deleting them would make a sub-floor link accumulate nothing
+                    # across attempts or across runs. Peak disk stays bounded by the
+                    # `got > src.size` guard.
                     f.close()
-                    part.unlink(missing_ok=True)
                     raise ConnectomeError(
                         f"{name}: transfer averaged {(got - start) / elapsed:.0f} B/s over "
                         f"{elapsed:.0f}s, below the {_MIN_RATE} B/s floor; aborting")
