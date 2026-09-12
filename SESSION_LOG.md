@@ -1440,3 +1440,75 @@ loop, §6 Latency budget (AC2), §7 Dependencies, §8 AC5 startup contract.
 - [workflow]: the architect died after part 3/3, so §9–§12 (AC6 procedure, file list, restated criteria, wiring audit) never existed. Parts 1–3 were enough to build from because §0's corrections table pinned every factual claim — but the *restated* AC2 lived in the missing §11, so the one criterion the spec explicitly reworded was the one it never wrote down. A spec posted in parts should put restated acceptance criteria in the **first** comment, not the last: it is the section a developer cannot reconstruct
 - [developer.md]: "verification by execution" needs the same anti-vacuity rule the suspended testing section has. Two of my first-run failures were my *checker* being wrong (asserting a pre-decode crosshair, and a client teardown that dropped 3 in-flight frames and read as 297/300 server-side). An unverified checker reports a false red as confidently as a false green — diagnose every failure to the layer that caused it before touching the code
 - [CLAUDE.md]: the "never put measured numbers in comments" rule collided with §7.1's mandated startup warning. I dropped the number and kept the instruction, which the spec permitted. Worth stating the carve-out once: a number in a *user-facing runtime message* is not a stale comment, but prefer an actionable instruction over a figure
+
+---
+### [2026-09-13 01:15] — architect — #5
+**Task**: Implementation spec for the split-panel UI shell (`index.html`, `src/viz/`, the browser-side client)
+**Result**: COMPLETED — 4-part spec on #5 (skeleton first, then §0-§2, §3-§8, §9-§13 FINAL)
+**Key decisions**:
+- **The game is hosted in a same-origin `<iframe src="game.html">`, not in the shell document.** Forced by the vendored `Renderer`, which sizes from `window.innerWidth` and re-runs on the `window` `resize` event (`vendor/engine/renderer.js:32-47`), and by `Input.screenToLogical(e.clientX, ...)` (`engine/input.js:39-43`) — both hard-code "the canvas is the viewport at the origin", and `vendor/**` may not be edited (#2 AC6). Measured both ways: same-doc puts a 1600×900 canvas in a 797×872 panel; the iframe fits exactly, gets its own `resize`, maps pointers correctly, and keeps `contentWindow.bridge` reachable. `game.html` stays unmodified as the standalone human-play page
+- **#5 owns the browser-side WebSocket client and the closed-loop wiring** (`src/ui/brain-client.js`, `game-host.js`). Not scope creep — AC2's "connection status, brain step count" is unsatisfiable without a connection, and no other open issue covers a browser client. Flagged as a scope determination with a clean split seam if the TL wants it separated
+- **Readiness and reconnect are driven by the socket, never by `/healthz`.** #4 mounts no `CORSMiddleware`, so a cross-origin `fetch` of `/healthz` from the shell fails with `TypeError: Failed to fetch` — verified. The WS handshake is the probe; jittered backoff absorbs the 5.7 s connectome load
+- **Never auto-reconnect on close 4409.** #4's newest-wins eviction closes the incumbent with `4409 "superseded"` (verified from a browser); two auto-retrying tabs would evict each other forever and thrash `Decoder.reset()`. A `reconnect` button instead. Same for 4403 (origin) — a retry cannot change the Origin header
+- **`spikes/sec` = mean popcount × `meta.sim_hz`, not × the observed frame rate.** The shell sees ~19 of the brain's ~50 steps/s (credit pacing). The obvious implementation under-reports by **2.60×** on measured data and looks entirely plausible. Made normative with the arithmetic
+- **Packed spike bits are handed to the panel packed**, with `unpackInto()` as an opt-in helper and the big-endian bit order (`(bytes[i>>3] >> (7-(i&7))) & 1`) expressed in exactly one file
+- **The shell owns the single rAF loop and the canvas backing store; `src/viz/panel.js` owns only drawing.** Contract is `createPanel(canvas, ready)` → `{resize, push, render, setConnection, destroy}`. #5 ships a placeholder body; #6 replaces the body, not the signature
+**Testing** (verification by execution — no new tests specified; testing is suspended):
+- `tools/spike/shell-hosting.mjs` (new, committed): **8/8 PASS** — same-doc overflows (1600×900 vs 797×872); iframe `innerWidth/innerHeight` == panel exactly; parent-driven resize fires the inner `resize` (`scale` 0.3113→0.1930); `contentWindow.bridge.getMode()="human"`; pointer centre → 1281.6,720.0 within one CSS px; fly aim `{0.25,0.75}` → `640,1080` at any panel width; parent keys do not leak into the game; keys reach it after click **and** after `contentWindow.focus()`
+- `tools/spike/shell-e2e.mjs` (new, committed): **7/7 PASS** against the **real** `ws_server.py` on numba — `/healthz` cross-origin blocked; WS accepted; `ready n=166700 backend=numba sim_hz=50 dn=1314 regions=27`; closed loop **288 frames / 15 s = 19.2 Hz, 288 actions applied, 0 rejected, 288 results returned**, phase `playing`; spikes 20,838 bytes, popcount median 14,168 (8.50% firing), decode+popcount **0.200 ms**; shell 58.3 fps / game 60.0 fps with the loop live; eviction `code=4409 "superseded"`, newcomer alive
+- `tools/spike/shell-fps.mjs` re-run (existing, unchanged): steady 60.0/60.0, drag 43.8/43.8 (p95 33.4 ms), stacked 60.0/60.0 — all PASS, both loops
+- `InvalidStateError: Cannot resize canvas after call to transferControlToOffscreen()` confirmed by execution — this is R1, the one thing that would force a revision of the #6 panel contract
+- Live frame dump via `.venv/bin/python` websockets client: all five of #4's AC4 fields present; frame 29,440 bytes; `ready.populations.weapon` is **6**, not the `2` in #4's illustrative example
+- `node tools/run-tests.mjs` baseline before designing: **38 pass, 0 fail, 0 skipped**
+**Files touched in third-party / vendored / existing code: 0.** Mechanism stated in the spec: `git diff --stat -- src/game assets game.html src/server src/brain` must print nothing, and `npm test` must stay at 38/0/0 (it includes the SHA-256 `vendor-integrity` test)
+**Spec posted to**: GitHub issue #5, comments 5648790288 (skeleton), 5648852717 (§0-§2), 5648867699 (§3-§8), 5648881547 (§9-§13 FINAL)
+**Next label**: #5 → `developer`; #6 → `ui-design` first, then `developer` — not applied, TL sets labels
+**Reported, not actioned (other people's surfaces)**: #4 mounts no CORS and no `StaticFiles` (recommend leaving it — the shell absorbs both); the #4 §4.2 `session` producer is still unassigned; `architecture.md:108` still documents the pre-#4 literal `spikes` array and #6 will read it
+**Improvement Insights**:
+- [architect.md]: the "post a skeleton first" rule worked and should say *what* the skeleton must contain. Mine listed section headings **plus the open questions I had not yet resolved** — when the previous architect died after part 3/3, the loss was §9-§12; a skeleton that names the unresolved questions lets a successor see what was still in flight, not just what the outline was
+- [workflow]: #4's spec was posted before its §9-§12 existed and the developer built anyway, inventing the restated criteria. Carrying that forward: **the last comment in a multi-part spec should be labelled FINAL and should state that it supersedes the skeleton.** I did this; without it a reviewer cannot tell whether part N/N is the whole spec or another fragment
+- [CLAUDE.md]: "verify by execution, including the data" should add *verify the wire, not the spec of the wire*. Two facts that changed this design were invisible from #4's spec text and only appeared on a live socket: `populations.weapon` is 6 (the spec's example says 2), and `/healthz` is unreachable from a browser (the spec says "the AC6 probe polls it" — true of its Python probe, false of the UI)
+- [workflow]: a probe that FAILs is not automatically a finding. My hosting check E "failed" at 1278.4 vs 1280 and check G "failed" at the seed value — both were my checker's bugs (`MouseEvent.clientX` truncates to an integer; `applyAction` rejects outside a live round). Diagnosing them cost two iterations and produced two of the spec's most useful gotchas. This is the same insight `developer-ws` logged; it is now two-for-two and belongs in a role definition
+
+---
+### [2026-09-13 14:05] — developer — #20, #21
+**Task**: Load-path integrity checks for built artifacts (#20 items 1-2), and inode-type/link-count checks on the `.part` open (#21 SEC-006)
+**Result**: COMPLETED (#21 fully; #20 items 1+2, item 3/AC4 referred to the TL as instructed)
+**Files changed**: `src/brain/connectome.py`, `tests/test_connectome.py`
+**Commits** (local only, not pushed): `c533e1a` #21, `8f28fb3` comment correction, `6bbb57e` #20
+**Key changes**:
+- `connectome.py:_open_nofollow` — `O_NONBLOCK` (readerless FIFO → `ENXIO` instead of an unbounded block) + `os.fstat(fd)` requiring `S_ISREG` and `st_nlink == 1`. `O_TRUNC` removed from the flags and replaced by an explicit `os.ftruncate(fd, 0)` **after** the check, so a hardlinked victim is never zeroed. `O_EXCL` deliberately not used — it would raise `EEXIST` on the legitimate `start = 0` restart that `test_stream_restarts_when_server_ignores_range:464` and `:475` pin
+- `connectome.py:_invariants` (new) — the size-independent half of `_sanity`, called by `build()` **and** `load()`: finite weights, row `|w|` sum ≤ 1+1e-5, `nt_sign` ∈ {-1,+1}, shape. One shared implementation so a freshly built artifact cannot fail the load check
+- `connectome.py:load` — calls `_invariants` after `check_format`
+- `connectome.py:BrainMeta._validate` — `ids` strictly ascending enforced on the `from_npz` path (#20 AC2)
+- `connectome.py` + `tests/test_connectome.py` — corrected the "`download()` retries three times" comment. `_stream` is called outside `download()`'s `try`, so a rate abort propagates out; the retry loop only ever re-ran a `_verify` failure, and the kept prefix is resumed by the **next run**
+- `tests/test_connectome.py:write_csc_npz` — default weights `arange(1..n)` → constant 0.5, so the over-rejection guard uses a genuinely input-normalised matrix
+**Testing**: `tests/test_connectome.py` **58 passed / 0 skipped / 0 failed** (unchanged baseline). Full `tests/` **205 passed / 0 skipped / 0 failed** in 235 s (`-p no:randomly`). No new tests — suspended 2026-09-12
+**Verification by execution** (`.venv/bin/python` 3.13.3, macOS, 2026-09-13):
+- #21 negative control, pre-fix `_open_nofollow` monkeypatched in-process (repo tree never mutated): `hardlink: ACCEPTED, victim intact=False len=2500 head=b'ATTACKER-CONTROLLED-BYTES'`; `fifo: HUNG, killed at 8.0s` — reproduces QA's and the judge's numbers
+- #21 post-fix, same harness: hardlink / FIFO / socket / symlink-to-device / symlink all REFUSED in ≤0.02 s, victim 270 B byte-identical in every case; fresh download and stale-`.part` restart both ACCEPTED
+- #21 truncation, not covered by any test: stale `.part` of 200 B, body 64 B → final file 64 B == body
+- #20 real artifact `data/` (n=166700, nnz=25,582,938): `load()` 0.649 s, `_invariants() -> []` in 0.353 s, `_sanity()` clean — no over-rejection
+- #20 crafted from a copy of the real artifact: NaN / +inf / 1e30 / weights×2 / `nt_sign`=0.5 / swapped ids / descending ids all REFUSED; **signs flipped (w → −w) ACCEPTED** (by design — needs a hash, AC3)
+- #20 cost: `load()` 0.256 s → 0.738 s, same process/run. `abs(W).sum(axis=1)` is 2.3× faster but accumulates in float32 and reports a row max of 1.0000441, **over the 1e-5 tolerance** — it would reject the artifact `build()` just wrote. `bincount` (float64) reports 1.0000000559
+- #20 AC3 middle option costed: 0.516 s to sha256 the 205 MB `weights.npz`
+**Mutation battery** (short windows, restore + `shasum` after **each** mutation; pre/post digest `408f0b58...` identical every time, `git status` clean):
+
+| Mutation | `FAILED` lines | Verdict |
+|---|---|---|
+| #21 drop the deferred `ftruncate` | *(none)* — `58 passed` | NOT CAUGHT |
+| #21 `st_nlink != 1` → always false | *(none)* — `58 passed` | NOT CAUGHT |
+| #21 drop `O_NONBLOCK` | *(none)* — `58 passed` | NOT CAUGHT |
+| #20 drop the `_invariants` call in `load()` | *(none)* — `58 passed` | NOT CAUGHT |
+| #20 drop the ids-ascending check | *(none)* — `58 passed` | NOT CAUGHT |
+| #20 loosen the row `|w|` tolerance to 1e9 | *(none)* — `58 passed` | NOT CAUGHT |
+
+Six for six uncaught — none of the new behaviour is test-pinned, because testing is suspended. Verified by execution instead.
+**Pre-existing test gap found by the battery** (reported, not fixed — testing suspended): `test_stream_restarts_when_server_ignores_range:464` comments *"the stale prefix must be truncated, not appended to"* but uses a 12-byte prefix and a 512-byte body, so the body overwrites the prefix whether or not truncation happens. It pins *not-appended*, not *truncated*. Same at `:475`. A prefix longer than the body would pin it
+**What is NOT closed**: #21 — a symlinked `raw/` **parent** (the #18 residual); a post-open hardlink; directory-level TOCTOU (nuisance, not integrity). #20 — a sign-flipped or rewired matrix still loads; `nt_sign` flipped +1→−1 passes (both are in the vocabulary); `brain.json` unvalidated; **nothing authenticates the artifact** — item 3 is open
+**Next label**: `qa` for both (code review disabled 2026-09-13). Not applied — TL sets labels
+**Improvement Insights**:
+- [developer.md]: the mutation-battery section assumes mutations *will* be caught. Under the testing suspension the honest result is an all-uncaught table, which reads like a failure and isn't. It should say that a wholly-uncaught battery is the expected shape while tests are suspended, and that its value is the **inventory of unpinned behaviour** handed to whoever resumes testing
+- [workflow]: the strongest negative control here mutated nothing on disk — the pre-fix `_open_nofollow` was redefined in-process and monkeypatched onto the module. With four agents sharing the tree, "prove the old code fails" should prefer in-process monkeypatching over on-disk mutation whenever the unit is a single function. Zero mutation window, no digest dance
+- [CLAUDE.md]: "a green test run must be proven" should extend to **a green run under a mutation** — `58 passed` after breaking the code is the informative result, and the existing wording only frames counts as evidence of coverage
+- [workflow]: the TL's warning that `gh issue view N --comments` prints nothing here was decisive; both issues' most important content was in comments (the `O_EXCL` veto, QA's NaN measurements). That belongs in `CLAUDE.md` next to the GitHub-issues section, not only in per-task briefs
