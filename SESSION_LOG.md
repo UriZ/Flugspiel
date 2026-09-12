@@ -918,3 +918,192 @@ failure the `tl.md` change above targets.
 - [criteria.md]: QA criterion 6 says "the DOCUMENTED install environment" but not how to establish it. The env QA built for #10 was Python 3.9.6 from `/usr/bin/python3`, below the 3.12+ that `architecture.md` requires — the finding was right, the evidence was from an unsupported interpreter. Criterion should require the interpreter version to be checked against the project's stated minimum and reported.
 - [developer.md]: add a note that `pytest.ini` (iniconfig) does not strip inline `#` comments — `addopts = -ra  # why` makes pytest try to collect a file literally named `#`. Cost a cycle.
 - [workflow]: a bug report's "suggested fix direction" is sometimes beatable. #10 suggested a `realdata`-marked test; a synthetic fixture catches the same mutation with 5 orders of magnitude of margin, costs 10 ms, and runs where there is no connectome. Worth stating that the suggested direction is a floor, not a spec.
+
+### Retrospective — developer #9/#10/#11
+**Applied, all five:**
+- `CLAUDE.md` → the "green test run must be proven" rule now covers **silent skips**, not just zero-test
+  runs. A skipped test is zero coverage; `43 passed, 1 skipped` reads as green and that is exactly how
+  #10 hid a wholly uncovered production backend. Report skips with reasons.
+- `criteria.md` → QA criterion 6 now requires the env to be **characterised**: report the interpreter
+  version and check it against the project minimum, and build in a uniquely-named directory. QA's #10
+  evidence came from Python 3.9.6 — below `architecture.md`'s stated 3.12+. The finding was right, the
+  evidence was from an unsupported interpreter.
+- `.claude/agents/developer.md` → same two rules for the developer side (read the skip list; unique
+  clean-env directory, report the interpreter actually obtained).
+- `.claude/agents/developer.md` → new "Gotchas learned the hard way": `pytest.ini` does not strip inline
+  `#` comments (cost this agent a cycle), and **a bug report's suggested fix direction is a floor, not a
+  spec** — #10 suggested a `realdata` test; the agent beat it with a synthetic fixture carrying five
+  orders of magnitude of margin that runs with no connectome present.
+
+**Notable**: the agent rejected the filed fix direction on #10 and produced a better one. That is the
+fourth evidence-backed override this project has seen, and the first scored under the new Developer
+criterion 9. It also caught that the activity band `(0.005, 0.20)` had its lower bound sitting on the
+0.0056 noise floor — tightened to `(0.04, 0.15)`. Code review should scrutinise that change: a
+tightened band is the kind of edit that makes unrelated tests flaky later.
+
+**#11 decision recorded**: fixed properly rather than narrowed. `PARTITIONS = 16` replaces
+`numba.get_num_threads()` as the partition count, so the number of float32 partial sums stops being a
+property of the machine. Cost measured: 127.0 / 114.0 / 99.4 steps/s at 16/8/4 threads (was
+129.7 / 138.6 / 127.8) — worst case still 5x the 50 Hz design rate.
+
+---
+### [2026-09-12 20:35] — architect — #3
+**Task**: Implementation spec for the Encoder + Decoder (game state → sensory neurons, descending neurons → game actions).
+**Result**: COMPLETED
+
+**Key decisions**:
+- **Measured every AC4 neuron before designing around it, and two of the four channels do not work as
+  the criterion assumes.** DNp01 (fire) is excellent — LC4+LPLC2 supply 29.9%/31.1% of its input mass
+  and injecting them at +0.3 gives 17.6 Hz ipsilateral vs 0.12 Hz contralateral. DNa02 (aim) receives
+  **0.000** of its input from LC4/LPLC2 and is only drivable from the premotor PFL3 (contralateral,
+  4.19 vs 0.00 Hz). **DNg100 is not drivable at all** — 0.00 Hz even when its own 47 strongest
+  presynaptic partners are driven at +3.0. MDN carries the weapon channel instead (5.9/6.3 Hz via
+  DNpe023). AC4 restated in testable form rather than left as prose.
+- **Photoreceptor drive does not reach any descending neuron** — verified twice, anatomically
+  (influence decays to the network-average floor by hop 5; 0.007 at DNa02 by hop 8) and by simulation
+  (+2.0 into all 6,006 photoreceptors leaves every readout flat). AC1 is still built exactly as written
+  because it is the correct sensory representation and is what #6/#7 need, but the spec says plainly
+  that it is not what moves the decoder, and test R3 pins the null so it cannot rot silently.
+- **The decoder integrates rather than positions.** Measured the PFL3→DNa02 transfer: it saturates by
+  |u| ≈ 0.2, is asymmetric at the rails (−1.29 vs +0.66), and sits on a large constant bias (index
+  = +0.365 at a symmetric command, seed sd ≈ 0.09). A proportional index→x map would be a bang-bang
+  controller. DNa02 laterality therefore drives a *turn rate* on a crosshair the decoder owns, with a
+  measured zero from `Decoder.calibrate()`. Saturated traverse 0.0→0.95 in 1.54 s on all three seeds.
+- **Added AC7 (shuffle control)** because AC1–AC6 cannot detect the failure the TL flagged. Measured
+  the honest reason it is needed: with no command at all the crosshair random-walks with sd 0.16–0.36
+  and reaches both rails on every seed — open-loop that looks exactly like a fly playing.
+- **Photoreceptor azimuth: the modal `ol_hex1` vote is near-unanimous** (voter spread 0.00–0.05
+  columns, 5,861/6,006 assigned). The optic-column xlsx fallback #1 left open is **not needed** and the
+  spec says not to add it. Soma position is useless — only 28 of 6,006 photoreceptors have one.
+  Calibrated which hex axis is azimuth against soma XYZ: `corr(hex1, X)` flips sign between sides
+  (+0.487 L / −0.558 R) while `corr(hex2, Y)` does not (−0.928 / −0.930), so hex1 is azimuth.
+- **Polarity resolved by injecting luminance, not threat.** Photoreceptors are 100% histamine and the
+  sign is already in `W`; the encoder injects a bright sky that missiles darken, so the encoder never
+  applies a sign itself.
+- **AC3's peptidergic injection is inert on its own** — 59 neurons at +3.0 move global firing from
+  7.820% to 7.838%. Kept for AC1-literal compliance and #6, and given a measurable path via gain
+  modulation of the looming site. The restated AC3 forbids a behavioural assertion about the
+  injection alone.
+- **#8 judgement: abstract only the signal-name registry and the config file.** No game-adapter base
+  class, no entity taxonomy. A second game needs new `SIGNALS` entries and a new JSON; `Encoder`,
+  `Decoder` and `Mapping` change by zero lines.
+- **`aim_bias` (PFL3) is flagged `prosthesis: true`** in config and echoed in
+  `EncodedFrame.prosthetic_sites`, so #7 must disclose it in any learning claim.
+
+**Spec posted to**: GitHub issue #3 (comment 5647282749). 0 files touched in vendored/existing code.
+**Spikes promoted to the repo**: `tools/spike/encoder-channels.py`, `tools/spike/decoder-contract.py` —
+both runnable, both carry their expected output in the header, both re-run clean here.
+**Next label**: `developer` (remove `architect`) — not applied, TL sets labels.
+
+**Improvement Insights**:
+- **[architect.md]**: add a rule — *before designing a readout, measure that the readout population can
+  actually be driven*. This spec's three most important findings (DNg100 undrivable, DNa02 unreachable
+  from vision, photoreceptors unreachable to any DN) are all things a spec written from the issue text
+  would have got wrong, and none of them are visible by reading code. "Verify by execution" currently
+  reads as being about third-party APIs; it needs to explicitly cover *the data*.
+- **[criteria.md]**: Architect criterion 8 says ambiguous criteria must be restated. It should also
+  require the spec to state, per criterion, whether the restatement is **assertable against the real
+  system or only against a synthetic fixture** — AC4 here is fully testable synthetically and only
+  one-quarter testable against the real brain, and that distinction is the whole story.
+- **[CLAUDE.md]**: the "backlog notes are user intent, not verified fact" rule earned its keep again,
+  but the corrections table is the useful artefact and it is not currently mandated. Suggest requiring
+  a **Corrections table** (claim / source / verdict) in every architect spec, as §1.1 here.
+- **[workflow]**: the TL brief carried one wrong fact (logical canvas 1536×288 vs the actual 2560×1440).
+  Harmless here because the wire format is normalised, but it would have silently broken the
+  `y_ground = 0.8472` constant. Worth the TL sourcing dimensional constants from the code when briefing.
+
+---
+### [2026-09-12 19:55] — security — #1 (findings: #15, #16, #17, #18, #19)
+**Task**: Security audit of `src/brain/connectome.py` + `src/brain/lif.py` on `brain-engine` — last gate before merge to `main`.
+**Audited commit**: `0472ad8` (both files last modified by `100e736`; working tree matched HEAD for both files and all three requirements files). Read-only — no code modified.
+**Result**: 5 findings (0 critical, 0 high, 3 medium, 2 low). All reproduced with working PoCs, none inferred.
+
+**Key findings**:
+- **#15 SEC-001 (Medium)** — `weights.npz` CSC indices are never bounds-checked. `sparse.load_npz` runs only `check_format(full_check=False)`, which skips the index-bounds check, and `FlyBrain.__init__`'s `csc_matrix(weights, dtype=float32)` re-runs the same partial check. Out-of-range indices reach `buf[t, indices[p]] += data[p]` (numba, no bounds check) and scipy's C `csc_matvec`. Verified: SIGSEGV (exit 139) on both backends, plus one variant that silently returned a wrong result with no crash. Offset and value both attacker-controlled. One-line fix: `W.check_format(full_check=True)`. `load()`'s existing shape/dtype/format checks make it *look* validated, which is why this was missed upstream.
+- **#16 SEC-002 (Medium)** — `pyarrow>=14.0` admits 14.0.0, which carries CVE-2023-47248 (arbitrary code execution reading Arrow IPC/Feather from untrusted sources) — exactly the `_edges`/`feather.read_table` path. Also CVE-2024-52338 (<17.0.0) and CVE-2026-25087 (15.0.0–23.0.0, UAF on IPC read). No upper bounds or hashes on any dependency. `requests>=2.31` is declared but imported nowhere — drop it.
+- **#17 SEC-003 (Medium)** — `_stream()` never compares bytes written against the pinned `src.size`. Verified: wrote 64 MB for a 1 MB pinned source while printing `poc 64/1 MB`. Server dictates disk usage. Also: no `Content-Range` validation on 206, and `timeout=60` is per-socket-op so a slow-drip server hangs the transfer indefinitely.
+- **#18 SEC-004 (Low)** — `open(part, "wb")` follows symlinks. Verified: a pre-planted symlink at the `.part` path was followed and the victim file overwritten with server-controlled content. Only matters when `FLUGSPIEL_DATA` points at a shared directory. Fix: `O_NOFOLLOW`.
+- **#19 SEC-005 (Low)** — `_require()` is existence-only, so `build()` called without `download()` feeds unverified Feather to pyarrow. Low alone; it is the second half of #16's chain.
+
+**Checked and clean** (recorded so the next audit does not redo it): no secrets in code or across all 16 commits; no `eval`/`exec`/`subprocess`/`os.system`/`pickle`/`yaml.load` in `src/`; `allow_pickle=False` genuinely enforced on *every* load path — verified scipy 1.18.1's `load_npz` sets `PICKLE_KWARGS = {'allow_pickle': False}` internally, so there is no unpickling vector; TLS verified by default, no `verify=False` anywhere; resume-stitching is closed by the whole-file digest and the oversized-`.part` path is handled; `os.replace` after `_verify` means a `target` is never partial; `FLUGSPIEL_DATA` traversal is not a vulnerability (hardcoded filenames, no privilege boundary); `pip-audit` on `.venv` reports "No known vulnerabilities found". Access control / XSS / CORS / CSP / rate limiting are N/A — `src/server/` is an empty `__init__.py`, `src/viz/` is empty. Re-audit those at the WebSocket server issue.
+
+**Environment note**: `pip-audit` was installed into `.venv` to run the dependency check, then uninstalled together with all 19 of its transitive dependencies; venv verified restored and core imports re-checked.
+
+**Calibration**: graded as a local research tool. Nothing is Critical or High. SEC-001 needs local file-write access, which usually implies the ability to edit `.py` directly — hence Medium. It becomes High the moment a prebuilt `weights.npz` is distributed to spare users the 1.1 GB download, since that turns "download a data file" into memory corruption. The source download is hash-pinned; the built artefact has no integrity story at all.
+
+**Next label**: `developer` (not applied — TL sets labels). #15 and #16 are the two I would not merge without.
+
+**Improvement Insights**:
+- **[security.md]**: add a rule — *prove every memory-safety finding by execution, in a subprocess, and report the exit code*. "numba does not bounds-check" is a plausible-sounding claim that a developer can reasonably push back on; `exit=139` is not. It also caught something reading alone would have missed: one crafted input did **not** crash and silently returned a wrong answer, which is the more dangerous case and the stronger argument for the fix.
+- **[security.md]**: the audit process step "check dependencies — `npm audit` or equivalent" produces a false clean here. `pip-audit` passed on the venv while `requirements.txt` permitted a version with an RCE advisory on the exact parser this project feeds untrusted input to. Step 3 should read: *audit the installed set **and** query each declared constraint's minimum satisfying version*, and state which of the two a clean result refers to.
+- **[criteria.md]**: Security criterion 4 (severity calibrated) should require each finding to name the **conditions under which its severity changes**. The single most useful sentence in this audit is "SEC-001 becomes High if a prebuilt `weights.npz` is ever distributed" — that is a design decision the team can still make freely, and it is invisible in a static severity label.
+- **[CLAUDE.md]**: the "a green test run must be proven, not assumed" rule has an exact security analogue that is not written down — *a clean audit must name what was checked*. Suggest extending the rule: any agent reporting a negative result (no findings, no bugs, nothing to fix) must enumerate what it checked and found clean, so the next agent does not silently redo it or wrongly assume coverage.
+- **[workflow]**: findings were filed as five separate issues per the role definition, but #16 and #19 are two halves of one exploit chain and #15/#18 share a "validate at the trust boundary" fix location. Consider letting the auditor file a single tracking issue with per-finding checkboxes when findings are coupled, so a developer cannot close half a chain and believe it is resolved.
+
+---
+### [2026-09-12 20:35] — senior-developer — #9, #10, #11
+**Task**: Code review of the three QA-found LIF defects (`029f072`, `50a63f5`, `79b0267`, `100e736`) — the gate skipped earlier when the previous reviewer died.
+**Result**: COMPLETED — **no must-fix items**, 10 nice-to-have. Review posted on #10 (`issuecomment-5647463569`), cross-linked with issue-specific summaries on #9 and #11.
+**Files changed**: none (review only; every mutation restored from checksummed backup, `git diff -- src tests` empty, and the two numba cache artefacts my `cache=True` experiment left in `src/brain/__pycache__/` removed).
+
+**Key findings**:
+- `src/brain/lif.py:85,92` — the 10.7 MB buffer costs 23–30% of kernel time, but **hoisting it is nearly worthless (0–9%)**. The cost is the *serial memset*, not the malloc. Zeroing inside the existing `prange(PARTITIONS)` loop buys 11–16% with no signature change; hoist + parallel zero buys 23–30%. All variants **bit-identical to the committed kernel at every thread count**.
+- `src/brain/lif.py:78` — the comment forbidding `cache=True` is **stale**; it was true only while the kernel called `get_num_threads()`, which #11 removed. `cache=True` now emits no warning, cuts first call 1.29s → 0.20s, and correctly invalidates when `PARTITIONS` is edited.
+- `src/brain/lif.py:64-74` — docstring embeds millisecond figures I measure 1.8x off, and claims an 8-thread penalty that does not exist in my numbers (16 thr 3.48 ms vs 8 thr 3.43 ms).
+- `PARTITIONS = 16` is **unpinned by any test** (mutation 16→8: 50/50 green) and P8 is faster at every thread count — worth choosing deliberately before #5/#6 record a raster.
+- `tests/test_lif.py:207-247` — the probe never asserts non-zero output (a zero-writing kernel leaves the test green) and nothing asserts the requested thread count took effect (`NUMBA_DISABLE_JIT=1` makes both runs identical).
+
+**Technical decisions**:
+1. **Re-ran everything scoped to the three reviewed test files.** Collection grew 50 → 76 mid-review because the concurrent #3 developer added `tests/test_mapping.py`; bare pytest counts are non-attributable when two agents share a branch.
+2. **Answered the throughput question by building four kernel variants and interleaving them round-robin**, so machine load hits every variant equally, rather than comparing across separately-timed runs. That is what separated "malloc cost" from "memset cost" — the two hypotheses give opposite fix directions.
+3. **Checked bit-exactness with `np.array_equal`, not a tolerance**, before proposing any kernel change — a perf fix that perturbs the #11 guarantee would be a regression disguised as an improvement.
+4. **Verified `cache=True` on the real `lif.py`, not a replica**, after my first replica test accidentally used a closure variable instead of the module global and so couldn't have seen the warning at all. Then specifically tested whether the cache invalidates on a `PARTITIONS` edit, because recommending caching without that check could reintroduce #11.
+5. **Declined to install intel-openmp/tbb** into the user's venv to test threading-layer independence; reported it as an enumerated residual risk with the static argument instead (`buf` indexed by the prange iteration variable, reduction serial in `t`, `fastmath` off so LLVM cannot reassociate).
+6. Classified honestly: nothing blocks. Throughput clears the requirement by 16x, so the perf items are follow-up work, not gate failures.
+
+**Testing**:
+- Suite: **50 passed, 0 skipped, 8.24s** (scoped re-run: 50 passed, 8.55s). No-data: **44 passed, 6 skipped, 5.81s** — all 6 listed by `-ra`, all 6 `realdata`, **zero numba skips**.
+- Mutation battery, 7 mutations: M1 drop `* p.gain` → **5 failed** (dev said 4); M2 gain 3.0→0.5 → **2 failed** (dev said 1); M3 `buf[t]`→`buf[0]` → **3 failed** (dev said 1); M4 `PARTITIONS`→`get_num_threads()` → 1 failed (confirmed); M5 `PARTITIONS` 16→8 → **0 failed, not caught**; M6 kernel writes zeros → 8 failed; M7 `tonic`×1.5 → 1 failed. M1–M3 are stronger than reported. M3's failure set **varies between runs** (the race is nondeterministic) — only the new contention test and the thread-count test caught it in both, which is the direct argument for #10 half A.
+- **#11 reproduced independently on the real connectome**: one digest `180906403c373ac2`, `last_fired=12981`, `sum_fired=565420` at `NUMBA_NUM_THREADS` 1/2/3/4/8/16/24 (added 3 and 24, the latter above the 16-core count).
+- **Activity band characterised across 15 (seed, backend) combinations** — 10 seeds numba, 5 numpy: min ∈ [0.0704, 0.0733], max ∈ [0.0849, 0.0927], worst margins +76% below / +38% above. The test is bit-deterministic per (seed, backend), so it is not a flake source; the seed spread of `max` is 0.008 against a 0.057 gap to the ceiling.
+- **Tolerance characterised**: the correct kernel's error is **exactly 1 float32 ulp** (1.1920929e-07), identical across 6 runs and 0.5–1.0 ulp across 8 matrix seeds. `atol=1e-6` is inherited from the pre-existing test, not fitted; raced kernel is 58,000x atol. Caveat recorded: the naive worst-case bound (1.2e-6) slightly exceeds `atol`, so let `rtol` dominate if the fixture ever grows.
+- **CI robustness of the subprocess test**: verified `sys.executable`, cwd-independence (passes from an unrelated cwd), `tmp_path` auto-cleanup, timeout semantics, numba-absent handling, and that thread counts 1 and 3 genuinely take effect.
+- **Half B verified by parsing, not by claim**: pip's own `parse_requirements` on `requirements-dev.txt` yields `numba==0.61.*`, `numpy<2.3`, `pytest>=8.0` — the inline comment after `-r` is handled.
+- Throughput (load-sensitive, loadavg 4.3–4.4, exact command `python -m src.brain.lif --steps 100`, 3 reps): 214/210/212 steps/s at 16 threads, 207/189/197 at 8, 165/168/181 at 4 — **1.7–1.8x the previously reported 127.0/114.0/99.4**. Direction reproduces, absolute values do not. Deterministic component (`firing=6.8%`) identical in all 9 runs.
+
+**Improvement Insights**:
+- **[senior-developer.md]**: add a rule — *when a perf finding has two candidate causes, build both variants and interleave the timing runs*. The TL's hypothesis (malloc) and the actual cause (serial memset) give opposite fixes, and only interleaved measurement on a loaded machine could tell them apart. Sequential A-then-B timing would have attributed load drift to the variant.
+- **[senior-developer.md]**: add — *before recommending an optimisation to numerical code, prove bit-exactness with `np.array_equal`, not a tolerance*. A 30% speedup that perturbs the last float32 bit would have silently broken #11's guarantee while every tolerance-based test stayed green.
+- **[CLAUDE.md]**: the "green test run must be proven" rule needs a companion for shared branches — *pytest counts are only attributable if you name the collected set*. My collection grew 50 → 76 mid-review from a concurrent agent's new file, which silently changed every mutation count. Scope the runner to the files under review, or record `--collect-only` counts before and after.
+- **[CLAUDE.md]**: add — *a claim embedded in source (docstring/comment) is a maintenance liability once it cites machine-specific numbers*. Two agents have now produced 1.8x-divergent figures for the same command; the stale `cache=True` comment shows the same rot in the other direction, where an obsolete warning cost a free 6x startup win for a whole session.
+- **[workflow]**: the developer's mutation table under-reported three of four rows (4/1/1 vs my 5/2/3). Under-reporting is safe, but it means the table cannot be trusted as a coverage record without re-execution. Suggest the developer role be required to paste the actual `FAILED` lines rather than a count, which makes the claim self-verifying and costs nothing.
+- **[workflow]**: two agents committing to one branch concurrently (#3 developer + this review) made my first measurement pass unusable. Worth the TL either serialising review against implementation on the same branch, or telling the reviewer up front which paths are moving.
+
+---
+### [2026-09-12 20:45] — developer — #3
+**Task**: Implement the encoder + decoder (GameState → injections, DN spikes → game actions) from the architect's spec
+**Result**: COMPLETED
+**Files changed**: `src/brain/mapping.py` (new, 233), `src/brain/encoder.py` (new, 290), `src/brain/decoder.py` (new, 250), `src/brain/mappings/missile_attack.json` (new, 37), `tests/test_mapping.py` (new, 26 tests), `tests/test_encoder.py` (new, 53), `tests/test_decoder.py` (new, 30), `tests/test_brain_loop.py` (new, 5 `realdata`). **Zero existing files modified** — `git diff --stat -- src/game src/brain/connectome.py src/brain/lif.py tests/conftest.py` is empty, as §5 required.
+**Commits**: `8ce8b15` (sources, committed by the TL as WIP mid-run), `1156a3b` (mutation-driven test hardening). Not pushed.
+
+**Key changes**:
+- `mapping.py:1-233` — config model + eager validation; `MappingError` at load only, never at `encode()`. Also holds `column()` and `loom()`, the two pure geometry functions both modules need: §3.1 forbids the decoder importing the encoder, and the `"threat"` y-policy needs `loom()`. Duplicating the measured TTC formula is how it drifts.
+- `encoder.py:130-160` — `photoreceptor_columns`: |w|-weighted modal `ol_hex1` vote over hex-carrying postsynaptic partners. Independently reproduces the architect's **5,861 / 6,006** exactly.
+- `encoder.py:100-118` — `SIGNALS` registry keyed by the config's `"signal"` string; a second game adds entries plus a JSON file and changes nothing else (§7). Signals take a `SignalCtx` (state + config + crosshair + per-enemy arrays computed once) rather than `(state, Mapping)`, which has nowhere to put `crosshair_x`.
+- `encoder.py:230-240` — luminance is injected as **brightness**, never sign-flipped: photoreceptors are 100% histamine so `nt_sign = -1` is already in `W`. A missile is a dark patch that removes drive.
+- `decoder.py:95-130` — `decode()` *proposes* a latch, `on_result()` commits or reverts it, so a rejected action is never counted as fired; an unconfirmed latch is treated as committed (#4 is not obliged to be synchronous).
+- `decoder.py:160-180` — `calibrate()` measures the aim zero on the live brain and seed. §2.4's zero has seed-to-seed sd 0.09, so a constant would bias the crosshair one way forever.
+
+**Testing**:
+- **114 tests, 0 failed, 0 skipped.** Scoped to my files, since `sec-fixes` is adding tests concurrently: `pytest -q tests/test_mapping.py tests/test_encoder.py tests/test_decoder.py` → **109 passed in 2.32s**; `pytest -q tests/test_brain_loop.py` → **5 passed in 206.63s**. `-ra` skip list empty. JS suite untouched: 38 pass / 0 fail / 0 skipped.
+- Chased a bare-`pytest` **180 passed / 193 collected** gap rather than waving it away: `tests/test_connectome.py` grew 33 → 46 between collect and run from `sec-fixes`' `44cc371`/`a88d8c1`. Not a silent skip; my files are 114/114.
+- Real brain (numpy, seed 0), reproducing §2: DNp01-L **17.62 Hz** vs R **0.12 Hz** (spec 17.56/0.12, measured on *numba* — the two kernels agree to 0.06 Hz); 5,861/6,006 azimuths; retina at 1.0 moves pooled DNa02 **0.500 → 0.625 Hz**. Verified `git diff -- src/brain/lif.py` was empty first — the architect's warning was live, I caught `gain = 0.5` from #9/#12's mutation run and waited for it to clear.
+- **AC7 (R2): real accuracy 1.000, shuffled 0.500** (chance), required ≥0.90 / ≤0.75. Ran as one continuous simulation (150 settle + 20 blocks of 50, counting the last 25) instead of 20 independent 400-step runs: 124 s instead of 208 s, same result as the 100/60 framing, and closer to what a real session does.
+- **Mutation battery: 13 mutations, 13 red**, sources verified byte-identical by `shasum` after each. Four started GREEN and exposed three real holes, all in tests the spec named: the `calibrate()` zero was invisible on a toy brain whose index is 0.0 anyway; D8 passed with the `halted` guard deleted for the wrong reason (latch already set + symmetric drive); and **the `nan_to_num` §6 note 2 mandates is unreachable from wire input** because `_finite()` sanitises on the way in — its reachable path is a `SIGNALS` function, i.e. #8's extension surface, which is where the test now lives. The fourth (`ttc_min`) is an equivalent mutant: at the shipped `tau = 1.0 / ttc_min = 0.25` the clip subsumes the floor, so it has no effect on any reachable game state.
+- **Proved AC7 is load-bearing rather than asserting it**: dropping the looming gain 0.30 → 0.02 (the TL's "signal buried under the drive") leaves **all 153 synthetic tests green** while R1 fails at 0.25 Hz and R2 collapses to 0.100.
+
+**Improvement Insights**:
+- **[developer.md]**: add — *when a spec mandates a defensive guard, mutate it and check the guard is reachable at all*. §6 note 2's `nan_to_num` is dead code against every GameState, because input sanitisation runs first; E9 passed with it deleted. The rule "mutate anything that must not silently break" caught it, but only because I mutated the guard rather than trusting the test named beside it. Suggest wording: a surviving mutant is either a test gap **or** dead code — say which.
+- **[CLAUDE.md]**: the mutation rule should require the *catching test name*, not a count. Three of my four surviving mutants were in tests the spec explicitly paired with them, so a count of "5 targets, 5 tests" would have looked complete while three were vacuous.
+- **[workflow]**: the spec's evidence and its required test backend disagreed — every §2 number came from `backend="auto"` → numba, while §8 note 8 requires `backend="numpy"` for real-brain tests. Harmless here (they agree to 0.06 Hz, and I verified it) but a tighter bound copied from §2 into a numpy test would fail for no reason. Suggest the architect record the backend beside each measured number.
+- **[criteria.md]**: consider requiring that a "shuffle control"-style criterion ship with a demonstration that it *can* go red. Mine only became trustworthy after mutation #12; before that it was an expensive test that had never failed.
