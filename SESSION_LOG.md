@@ -1408,3 +1408,30 @@ loop, §6 Latency budget (AC2), §7 Dependencies, §8 AC5 startup contract.
 **Improvement Insights**:
 - [workflow]: with code review disabled, the reviewer's measured "before" numbers in the issue comment were the only baseline I could diff my fix against. Keep requiring reviewers to state the *measured* failing behaviour, not just the defect — it is what makes a later fix verifiable without re-running the review
 - [CLAUDE.md]: the testing suspension needs a stated carve-out for *amending* an existing assertion that is vacuous. The TL had to authorise this case by hand; a one-line rule ("fixing a test that cannot fail is a fix, not new coverage") would have made it self-serve
+
+---
+### [2026-09-13 15:05] — developer — #4
+**Task**: Implement the WebSocket server + bridge from the three-part architect spec
+**Result**: COMPLETED
+**Files changed**: `src/server/ws_server.py` (new, 424 lines), `src/game/state-codec.js`, `src/game/fly-bridge.js`
+**Key changes**:
+- `src/server/ws_server.py` — one process, one `FlyBrain`/`Encoder`/`Decoder`, one asyncio loop, one active controller. `lifespan` does load + JIT + `Decoder.calibrate()` before the socket answers; `GET /healthz` is the readiness probe. Reader parses JSON into a latest-wins slot and never encodes or steps; `encode`/`step`/frame-build run on the server's 50 Hz clock; credit capped at 1 and never banked; no debt catch-up. `ack_seq` promoted before the step that injects it
+- `ws_server.py:44` — `if __package__ in (None, "")` sys.path bootstrap: the literal AC5 command `python src/server/ws_server.py` works, and `python -m src.server.ws_server` still works
+- `ws_server.py` `Session._handle` — `result` applied immediately in the reader (`Decoder.on_result` consumes a latch the next `decode()` clears); `seq != ack_seq` dropped as `stale_result`. `detached` is terminal: no re-arm, no decoder reset, no retry; one `bridge_detached` error, snapshots keep flowing, `descending.halted` stays true
+- `ws_server.py` `Session._track_session` — a `session` change resets the decoder only; the brain is a continuous reservoir and reseeding it would invalidate the calibrated `aim_zero`. `reward.session_changed` true on exactly the first frame after
+- `ws_server.py` `Runtime.__init__` — 27 `superclass` index arrays built once at startup; `Runtime.snapshot` reuses one bool mask and clears only the fired indices
+- `ws_server.py` `brain_ws` — Origin allowlist (Starlette applies none), newest-wins eviction `close(4409,"superseded")`, generation guard in the loop condition
+- `src/game/fly-bridge.js:_afterFrame` + `state-codec.js:buildState` — the §4.2 `session` restart token, watched per frame (not per emit) so the one-frame `gameover` cannot be missed. `buildState`'s 6th parameter defaults, so all 7 existing call sites are untouched
+**Testing** (verification by execution — no new unit tests, testing is suspended):
+- **63 checks passed / 0 failed** across 11 groups against a real uvicorn driven by the `websockets` client. Script: scratchpad `verify.py`, run as `.venv/bin/python verify.py 8793`
+- **AC2**, 3 runs × 300 frames at 20 Hz, real connectome, numba, other agents active: median 22.1/24.3/21.0 ms, p95 29.0/29.3/25.8 ms, max 56.0/61.9/38.8 ms. p95 clears 50 ms in every run; 2 samples in 900 crossed it, consistent with the spec's p95 restatement. `sim_hz` 49.6–50.0, frame 29.5 kB median
+- **numpy fallback**: `--backend numpy` → `ac2_capable:false`, startup stderr warning, RTT median 134.1 ms, `sim_hz` 18.4 — degrades and keeps answering, does not hang
+- **Seam check**: 10 envelopes produced by the *real* `buildState()` (not synthetic) driven through the server; every one returned an action `FlyBridge.applyAction` accepts, `meta.rejected` 0, `session_changed` fired on exactly the two boundaries including the one-frame `gameover`
+- **Session counter**: 7/7 checks against the fake game, including two emitted samples with no `gameover` phase between them where `session` still advanced — the exact blindness the token exists for
+- Existing suites unchanged: `pytest -q -ra` → **205 passed, 0 failed, 0 skipped** (235 s); `npm test` → **38 pass, 0 fail, 0 skipped**
+**Observation for another issue (not fixed — not my lane)**: `Decoder.reset()` clears `_latched` while the brain is deliberately *not* reset, so if `fire_hz` is still above `on_hz` the next `decode()` sees a false rising edge and emits one spurious `fire` right after a session change or a reconnect. Observed at seq 7 of the seam run. Harmless (a shot as a new game starts) but it is a real artefact of the spec-mandated reset, and it belongs to #3's decoder
+**Next label**: `code-review` (remove `developer`) — not applied, TL sets labels
+**Improvement Insights**:
+- [workflow]: the architect died after part 3/3, so §9–§12 (AC6 procedure, file list, restated criteria, wiring audit) never existed. Parts 1–3 were enough to build from because §0's corrections table pinned every factual claim — but the *restated* AC2 lived in the missing §11, so the one criterion the spec explicitly reworded was the one it never wrote down. A spec posted in parts should put restated acceptance criteria in the **first** comment, not the last: it is the section a developer cannot reconstruct
+- [developer.md]: "verification by execution" needs the same anti-vacuity rule the suspended testing section has. Two of my first-run failures were my *checker* being wrong (asserting a pre-decode crosshair, and a client teardown that dropped 3 in-flight frames and read as 297/300 server-side). An unverified checker reports a false red as confidently as a false green — diagnose every failure to the layer that caused it before touching the code
+- [CLAUDE.md]: the "never put measured numbers in comments" rule collided with §7.1's mandated startup warning. I dropped the number and kept the instruction, which the spec permitted. Worth stating the carve-out once: a number in a *user-facing runtime message* is not a stale comment, but prefer an actionable instruction over a figure
