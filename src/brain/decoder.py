@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from .lif import FlyBrain
-from .mapping import Mapping, column, loom
+from .mapping import Mapping, MappingError, column, loom
 
 if TYPE_CHECKING:  # §3.1: the decoder must not import the encoder at runtime
     from .encoder import Encoder
@@ -47,6 +47,19 @@ class Decoder:
         self.brain = brain
         self.mapping = mapping or Mapping.default()
         m = self.mapping
+
+        # Eager, mirroring `Encoder.__init__`: `brain.cells()` returns an empty array for a
+        # type this brain lacks, so a typo would give a permanently dead readout with no
+        # error at all. §3.2: a bad config must fail before the first frame. A type present
+        # on only one side is legitimate (MDN is unilateral), so this checks the type, not
+        # the per-side population size.
+        present = set(brain.meta.cell_type.tolist())
+        for where, types in (("aim", m.aim["types"]), ("fire", m.fire.types),
+                             ("weapon", m.weapon.types)):
+            missing = sorted(t for t in types if t not in present)
+            if missing:
+                raise MappingError(f"readout {where!r}: cell types {missing} are absent from "
+                                   f"this brain's {len(present)} annotated types")
 
         self._pop = {
             "aim_L": brain.cells(list(m.aim["types"]), side="L"),
