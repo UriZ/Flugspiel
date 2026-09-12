@@ -139,8 +139,11 @@ def write_csc_npz(path, n, indices, data=None):
 
     Every nonzero lands in column 0. This is the shape of a hostile artifact: valid
     indptr (so `check_format(full_check=False)` passes) with out-of-range `indices`.
+
+    Default weights are input-normalised (row |w| sum <= 1) so that the in-range case
+    exercises the #15 bounds check without tripping the #20 load-path invariants.
     """
-    data = np.arange(1, len(indices) + 1, dtype=np.float32) if data is None else data
+    data = np.full(len(indices), 0.5, dtype=np.float32) if data is None else data
     indptr = np.zeros(n + 1, dtype=np.int32)
     indptr[1:] = len(data)
     np.savez(path, format=np.array(b"csc"), shape=np.array([n, n]), data=data,

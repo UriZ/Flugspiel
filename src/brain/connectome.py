@@ -180,6 +180,12 @@ class BrainMeta:
             if kind is not None and arr.dtype.kind != kind:
                 raise ConnectomeError(
                     f"{path}: {key} has dtype {arr.dtype}, expected kind {kind!r}; {bad}")
+        # The ordering this class documents as its contract. `_sanity` checks it when
+        # build() writes the file; nothing checked it when load() reads one back, and
+        # every downstream lookup is a np.searchsorted(ids, body_id) that answers
+        # silently wrong — not out of range, wrong — on unsorted ids (#20).
+        if n > 1 and not np.all(np.diff(ids) > 0):
+            raise ConnectomeError(f"{path}: ids are not strictly increasing; {bad}")
 
 
 # --------------------------------------------------------------------------- pure helpers
@@ -503,19 +509,46 @@ def _edges(path: Path, ids: np.ndarray):
     return np.concatenate(pres), np.concatenate(posts), np.concatenate(ws)
 
 
-def _sanity(W: sparse.csc_matrix, meta: BrainMeta) -> None:
-    n = meta.n
-    row_abs = np.bincount(W.indices, weights=np.abs(W.data), minlength=n)
-    checks = {
-        f"too few neurons ({n})": n >= 100_000,
-        f"too few connections ({W.nnz})": W.nnz >= 10_000_000,
-        f"W.shape {W.shape} != ({n}, {n})": W.shape == (n, n),
+def _failures(checks: dict[str, bool]) -> list[str]:
+    return [msg for msg, ok in checks.items() if not ok]
+
+
+def _invariants(W: sparse.csc_matrix, meta: BrainMeta) -> list[str]:
+    """Properties of any brain `build()` writes, at any size. Returns the failures.
+
+    Run on the **load** path as well as the build path. `load()` checked shape, dtype and
+    index bounds, which makes a crafted artifact memory-safe (#15) but says nothing about
+    its values, and the artifact most worth attacking was the least checked one (#20).
+    These are the checks that do not assume the real connectome's scale, so a two-neuron
+    matrix passes them too.
+
+    What they catch: rescaled weights, a synapse set to NaN or inf, a rewritten nt_sign.
+    What they do **not** catch, because none of it changes |w| or the sign vocabulary: a
+    matrix with its signs flipped, or one rewired to connect different neurons. Only a
+    pinned hash would, which is the open half of #20.
+
+    `_sanity` and `load()` share this one implementation deliberately, rather than each
+    reducing the row sums their own way: a cheaper reduction (`abs(W).sum(axis=1)`)
+    accumulates in float32 and overshoots the tolerance on the real matrix, so it would
+    reject the artifact build() had just written.
+    """
+    worst = np.bincount(W.indices, weights=np.abs(W.data), minlength=meta.n).max(initial=0.0)
+    return _failures({
+        f"W.shape {W.shape} != ({meta.n}, {meta.n})": W.shape == (meta.n, meta.n),
         "W contains non-finite weights": bool(np.isfinite(W.data).all()),
-        f"row |w| sum exceeds 1 ({row_abs.max()})": row_abs.max() <= 1 + 1e-5,
+        f"row |w| sum exceeds 1 ({worst})": worst <= 1 + 1e-5,
+        "nt_sign is not all -1 or +1": bool(np.isin(meta.nt_sign, (-1.0, 1.0)).all()),
+    })
+
+
+def _sanity(W: sparse.csc_matrix, meta: BrainMeta) -> None:
+    """Build-time checks: the load-path invariants, plus bounds only the real data meets."""
+    bad = _failures({
+        f"too few neurons ({meta.n})": meta.n >= 100_000,
+        f"too few connections ({W.nnz})": W.nnz >= 10_000_000,
         "nt_sign has only one sign": bool((meta.nt_sign < 0).any() and (meta.nt_sign > 0).any()),
         "ids are not strictly increasing": bool(np.all(np.diff(meta.ids) > 0)),
-    }
-    bad = [msg for msg, ok in checks.items() if not ok]
+    }) + _invariants(W, meta)
     if bad:
         raise ConnectomeError("connectome sanity checks failed: " + "; ".join(bad))
 
@@ -602,6 +635,15 @@ def load(data_dir: Path | None = None) -> tuple[sparse.csc_matrix, BrainMeta]:
         W.check_format(full_check=True)
     except ValueError as exc:
         raise ConnectomeError(f"{wpath} is corrupt ({exc}); delete it and run: {_BUILD_CMD}") from exc
+    # Structure is not provenance. Nothing here authenticates the artifact — see #20 for
+    # why it is not hash-pinned the way SOURCES pins the raw downloads — but a matrix
+    # whose values no longer obey what build() guarantees is rejected rather than
+    # silently simulated. Costs a bincount over the nonzeros, once, at startup.
+    bad = _invariants(W, meta)
+    if bad:
+        raise ConnectomeError(
+            f"{wpath} failed the brain's invariants ({'; '.join(bad)}); "
+            f"delete it and run: {_BUILD_CMD}")
     return W, meta
 
 
