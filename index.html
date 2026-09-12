@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flugspiel — fly brain plays Missile Attack</title>
+  <link rel="stylesheet" href="src/ui/shell.css">
+</head>
+<body>
+  <!--
+    Serve from the repo root over http:// — file:// breaks both ES modules and the
+    same-origin contentWindow access the loop depends on:
+        python3 -m http.server 8080   ->   http://localhost:8080/index.html
+    The game is a same-origin iframe, not part of this document: the vendored renderer
+    sizes itself from window.innerWidth and cannot be edited (#2 AC6). See #5 §2.
+  -->
+  <div id="app">
+    <div id="viz-panel"><canvas id="viz-canvas"></canvas></div>
+    <div id="divider" data-role="divider" role="separator" aria-orientation="vertical"
+         aria-label="resize panels"></div>
+    <div id="game-panel"><iframe id="game-frame" src="game.html" title="Missile Attack"></iframe></div>
+    <footer id="status-bar"></footer>
+  </div>
+  <script type="module" src="src/ui/shell.js"></script>
+</body>
+</html>
