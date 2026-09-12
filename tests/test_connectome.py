@@ -1,8 +1,13 @@
+import contextlib
 import hashlib
 import importlib.metadata
 import os
+import re
 import subprocess
 import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import numpy as np
@@ -369,3 +374,237 @@ def test_build_never_hands_an_unverified_file_to_pyarrow(tmp_path, monkeypatch):
         (raw / name).write_bytes(b"NOT THE REAL FEATHER FILE")
     with pytest.raises(c.ConnectomeError, match="bytes"):
         c.build(tmp_path)
+
+
+# ------------------------------------------ #17/#18 download scaffolding (no network)
+
+
+class _QuietServer(HTTPServer):
+    """Suppresses the traceback a handler raises when the client aborts deliberately —
+    which is precisely what the #17 tests do."""
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+class _Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        self.server.ranges.append(self.headers.get("Range"))
+        try:
+            self.server.respond(self)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+
+@contextlib.contextmanager
+def serving(respond):
+    """Run `respond(handler)` on 127.0.0.1:<ephemeral>. Records Range headers seen."""
+    srv = _QuietServer(("127.0.0.1", 0), _Handler)
+    srv.respond = respond
+    srv.ranges = []
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield srv, f"http://127.0.0.1:{srv.server_port}/f"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=5)
+
+
+def send_body(h, body, status=200, extra=()):
+    h.send_response(status)
+    for key, value in extra:
+        h.send_header(key, value)
+    h.send_header("Content-Length", str(len(body)))
+    h.end_headers()
+    h.wfile.write(body)
+
+
+UNPINNED_HASH = "00" * 32  # these tests exercise _stream, which never checks the hash
+
+
+# ------------------------------------------------- #17 _stream bounds the transfer
+
+
+def test_stream_aborts_when_server_exceeds_pinned_size(tmp_path, monkeypatch):
+    """The pinned size must bound the transfer, not just be printed as a denominator.
+
+    Before this, a server declaring an honest-but-huge Content-Length wrote as much as
+    it liked: the PoC put 64 MB into a .part pinned at 1 MB (#17).
+    """
+    monkeypatch.setattr(c, "_CHUNK", 1024)
+    part = tmp_path / "f.part"
+    with serving(lambda h: send_body(h, b"A" * (64 << 10))) as (_srv, url):
+        with pytest.raises(c.ConnectomeError, match="more than the pinned 4096 bytes") as ei:
+            c._stream(c.Source(url, 4096, UNPINNED_HASH), part, "f")
+    got = int(re.search(r"got (\d+)", str(ei.value)).group(1))
+    assert got <= 4096 + 1024, f"overshoot must be bounded by one chunk, got {got}"
+    assert not part.exists(), ".part must be removed, not left occupying disk"
+
+
+def test_stream_accepts_exactly_the_pinned_size(tmp_path, monkeypatch):
+    """Guards the boundary: the abort must be `got > size`, not `>=` (#17)."""
+    monkeypatch.setattr(c, "_CHUNK", 1024)
+    body = b"B" * 4096
+    part = tmp_path / "f.part"
+    with serving(lambda h: send_body(h, body)) as (_srv, url):
+        c._stream(c.Source(url, len(body), UNPINNED_HASH), part, "f")
+    assert part.read_bytes() == body
+
+
+def test_stream_restarts_when_server_ignores_range(tmp_path):
+    """Regression guard on the existing `status != 206` branch (#17)."""
+    body = b"C" * 512
+    part = tmp_path / "f.part"
+    part.write_bytes(b"stale prefix")
+    with serving(lambda h: send_body(h, body)) as (srv, url):
+        c._stream(c.Source(url, len(body), UNPINNED_HASH), part, "f")
+    assert srv.ranges == ["bytes=12-"], "a partial .part must trigger a Range request"
+    assert part.read_bytes() == body, "the stale prefix must be truncated, not appended to"
+
+
+def test_stream_restarts_when_206_range_does_not_match_request(tmp_path):
+    """A 206 for a range we did not ask for must not be appended onto the prefix.
+
+    `_verify` would still catch the stitched result, but only after 1 GB of bandwidth.
+    """
+    body = b"D" * 512
+    part = tmp_path / "f.part"
+    part.write_bytes(b"stale")
+
+    def respond(h):  # 206, but for bytes 0- instead of the bytes=5- requested
+        send_body(h, body, status=206,
+                  extra=[("Content-Range", f"bytes 0-{len(body) - 1}/{len(body)}")])
+
+    with serving(respond) as (srv, url):
+        c._stream(c.Source(url, len(body), UNPINNED_HASH), part, "f")
+    assert srv.ranges == ["bytes=5-"]
+    assert part.read_bytes() == body, "must restart from scratch, not stitch"
+
+
+def test_stream_resumes_when_206_range_matches(tmp_path):
+    """The Content-Range check must not break a legitimate resume (#17).
+
+    Also covers O_APPEND surviving the fd wrapper introduced for #18.
+    """
+    prefix, rest = b"E" * 5, b"F" * 5
+    part = tmp_path / "f.part"
+    part.write_bytes(prefix)
+    total = len(prefix) + len(rest)
+
+    def respond(h):
+        send_body(h, rest, status=206,
+                  extra=[("Content-Range", f"bytes {len(prefix)}-{total - 1}/{total}")])
+
+    with serving(respond) as (srv, url):
+        c._stream(c.Source(url, total, UNPINNED_HASH), part, "f")
+    assert srv.ranges == ["bytes=5-"]
+    assert part.read_bytes() == prefix + rest
+
+
+def test_stream_aborts_on_a_slow_drip(tmp_path, monkeypatch):
+    """`timeout=60` is per socket read, so a drip server never trips it (#17).
+
+    Constants are monkeypatched to keep the test sub-second; the guard under test is the
+    average-rate floor, not the specific numbers.
+    """
+    monkeypatch.setattr(c, "_CHUNK", 1)
+    monkeypatch.setattr(c, "_RATE_GRACE", 0.2)
+    monkeypatch.setattr(c, "_MIN_RATE", 1 << 20)
+    part = tmp_path / "f.part"
+
+    def respond(h):
+        h.send_response(200)
+        h.send_header("Content-Length", str(1 << 20))
+        h.end_headers()
+        for _ in range(60):
+            h.wfile.write(b"x")
+            h.wfile.flush()
+            time.sleep(0.02)
+
+    with serving(respond) as (_srv, url):
+        with pytest.raises(c.ConnectomeError, match=r"below the \d+ B/s floor"):
+            c._stream(c.Source(url, 1 << 20, UNPINNED_HASH), part, "f")
+    assert not part.exists()
+
+
+def test_stream_allows_a_fast_transfer_under_the_same_guard(tmp_path, monkeypatch):
+    """Guards over-rejection: the rate floor must not abort a healthy transfer."""
+    monkeypatch.setattr(c, "_RATE_GRACE", 0.0)
+    monkeypatch.setattr(c, "_MIN_RATE", 1)
+    body = b"G" * 4096
+    part = tmp_path / "f.part"
+    with serving(lambda h: send_body(h, body)) as (_srv, url):
+        c._stream(c.Source(url, len(body), UNPINNED_HASH), part, "f")
+    assert part.read_bytes() == body
+
+
+# --------------------------------------------------- #18 .part must not be a symlink
+
+
+@pytest.mark.parametrize("victim_body,resume", [
+    (b"", False),                                  # fresh download -> O_TRUNC
+    (b"original important content\n", True),       # honoured resume -> O_APPEND
+])
+def test_stream_refuses_a_symlinked_part(tmp_path, victim_body, resume):
+    """A pre-planted .part symlink must be an error, not a redirect (#18).
+
+    Both open-flag combinations are covered. An empty symlink target means a fresh
+    download (O_TRUNC); a non-empty one the server honours with a *matching* 206 means a
+    resume (O_APPEND) — the 206 has to match, or the Content-Range check from #17 resets
+    start to 0 and the O_APPEND path is never reached.
+    """
+    victim = tmp_path / "victim"
+    victim.write_bytes(victim_body)
+    part = tmp_path / "f.part"
+    os.symlink(victim, part)
+    total = 1 << 20
+    payload = b"ATTACKER-CONTROLLED PAYLOAD\n"
+
+    def respond(h):
+        if resume:
+            send_body(h, payload, status=206,
+                      extra=[("Content-Range", f"bytes {len(victim_body)}-{total - 1}/{total}")])
+        else:
+            send_body(h, payload)
+
+    with serving(respond) as (srv, url):
+        with pytest.raises(c.ConnectomeError, match="not a regular file"):
+            c._stream(c.Source(url, total, UNPINNED_HASH), part, "f")
+    assert srv.ranges == ([f"bytes={len(victim_body)}-"] if resume else [None])
+    assert victim.read_bytes() == victim_body, "victim was overwritten through the symlink"
+    assert b"ATTACKER" not in victim.read_bytes()
+
+
+def test_stream_still_writes_a_regular_part_file(tmp_path):
+    """Guards over-rejection: O_NOFOLLOW must not break the normal case (#18)."""
+    body = b"H" * 256
+    part = tmp_path / "f.part"
+    with serving(lambda h: send_body(h, body)) as (_srv, url):
+        c._stream(c.Source(url, len(body), UNPINNED_HASH), part, "f")
+    assert part.is_file() and not part.is_symlink() and part.read_bytes() == body
+
+
+def test_download_warns_when_raw_is_writable_by_others(tmp_path, capsys, monkeypatch):
+    """`raw.mkdir` inherits the umask and does not check a pre-existing dir's mode (#18)."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    raw.chmod(0o777)
+    monkeypatch.setattr(c, "SOURCES", {})  # nothing to fetch; no network
+    c.download(tmp_path)
+    assert "writable by other users" in capsys.readouterr().out
+
+
+def test_download_is_quiet_for_a_private_raw_dir(tmp_path, capsys, monkeypatch):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    raw.chmod(0o700)
+    monkeypatch.setattr(c, "SOURCES", {})
+    c.download(tmp_path)
+    assert "writable by other users" not in capsys.readouterr().out

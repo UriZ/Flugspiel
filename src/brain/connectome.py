@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +62,14 @@ PHOTORECEPTOR_TYPES = ("R1-6", "R7", "R8")
 _SIDES = ("L", "R", "M")
 _CHUNK = 8 << 20
 _BUILD_CMD = "python -m src.brain.connectome"
+
+# `timeout=60` on urlopen is per socket operation, so a server dripping one byte every
+# 59 s keeps a transfer alive forever. Bound the *average* rate instead of the total
+# duration: a 1 GB download over a genuinely slow link is legitimate and cannot be given
+# a fixed deadline, but nothing honest sustains under 8 KB/s (that is 36 hours for the
+# 1 GB source). The grace period covers slow starts and TLS setup (#17).
+_MIN_RATE = 8 << 10   # bytes/s, averaged over this transfer
+_RATE_GRACE = 30.0    # s before the floor starts applying
 
 
 class ConnectomeError(RuntimeError):
@@ -236,6 +245,48 @@ def _verify(path: Path, src: Source) -> str:
     return digest
 
 
+def _open_nofollow(path: Path, *, append: bool):
+    """Open `path` for writing, refusing to follow a symlink.
+
+    A plain `open()` follows symlinks, so a pre-planted `<name>.part` symlink redirects
+    server-controlled bytes through to any file the running user can write — and the
+    `.part` is only unlinked *after* `_verify` fails, so the hash pin does not help: it
+    protects what gets parsed, not what gets written (#18).
+
+    Only reachable when FLUGSPIEL_DATA points somewhere another local user can write — a
+    shared scratch volume, /tmp/flugspiel, a CI runner cache — which is exactly what the
+    env var exists for. With the default <repo>/data an attacker would already be able to
+    edit this file.
+
+    Mode 0o644 matches what `open(path, "wb")` produced under the usual umask, so a
+    deliberately shared 1.1 GB cache stays readable; tightening it is a separate call.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
+    flags |= os.O_APPEND if append else os.O_TRUNC
+    try:
+        fd = os.open(path, flags, 0o644)
+    except OSError as exc:  # ELOOP: something pre-planted a symlink at the .part path
+        raise ConnectomeError(
+            f"{path} is not a regular file ({exc}); remove it and retry") from exc
+    # O_APPEND is a kernel flag, so writes append regardless of the mode string here.
+    return open(fd, "wb", closefd=True)
+
+
+def _warn_if_shared(raw: Path) -> None:
+    """Warn if the raw dir is group/world-writable — `mkdir` inherits the umask and does
+    not check the mode of a directory that already exists (#18). Not fatal: relocating
+    the 1.1 GB cache onto a shared volume is a legitimate thing to do with FLUGSPIEL_DATA,
+    but the symlink-planting precondition is worth surfacing rather than silently allowing.
+    """
+    try:
+        mode = raw.stat().st_mode
+    except OSError:
+        return
+    if mode & 0o022:
+        print(f"  warning: {raw} is writable by other users (mode {mode & 0o777:o}); "
+              f"another local user could pre-plant files there")
+
+
 def _stream(src: Source, part: Path, name: str) -> None:
     """Download `src` into `part`, resuming an existing partial file via Range."""
     start = part.stat().st_size if part.exists() else 0
@@ -248,12 +299,38 @@ def _stream(src: Source, part: Path, name: str) -> None:
     with urllib.request.urlopen(req, timeout=60) as resp:
         if start and resp.status != 206:  # server ignored the range — restart
             start = 0
+        elif start:
+            # A 206 for a range we did not ask for would append the wrong bytes onto the
+            # existing prefix. `_verify` still catches it, but only after paying 1 GB of
+            # bandwidth to find out. `start = 0` re-opens with O_TRUNC, so restarting is
+            # already sound.
+            rng = resp.headers.get("Content-Range", "")
+            if not rng.startswith(f"bytes {start}-"):
+                start = 0
         got = start
         mark = 0
-        with open(part, "ab" if start else "wb") as f:
+        began = time.monotonic()
+        with _open_nofollow(part, append=bool(start)) as f:
             while chunk := resp.read(_CHUNK):
                 f.write(chunk)
                 got += len(chunk)
+                if got > src.size:
+                    # src.size is pinned. A server sending more is serving the wrong file
+                    # or is hostile; `_verify` would reject it either way, but only after
+                    # the server has decided how much of our disk to use. Overshoot is
+                    # bounded by one _CHUNK, and the .part is removed here.
+                    f.close()
+                    part.unlink(missing_ok=True)
+                    raise ConnectomeError(
+                        f"{name}: server sent more than the pinned {src.size} bytes "
+                        f"(got {got}); refusing to continue")
+                elapsed = time.monotonic() - began
+                if elapsed > _RATE_GRACE and (got - start) / elapsed < _MIN_RATE:
+                    f.close()
+                    part.unlink(missing_ok=True)
+                    raise ConnectomeError(
+                        f"{name}: transfer averaged {(got - start) / elapsed:.0f} B/s over "
+                        f"{elapsed:.0f}s, below the {_MIN_RATE} B/s floor; aborting")
                 if got - mark >= src.size // 50:
                     mark = got
                     print(f"\r  {name} {got >> 20}/{src.size >> 20} MB", end="", flush=True)
@@ -268,6 +345,7 @@ def download(data_dir: Path | None = None, *, force: bool = False) -> Path:
     """
     raw = _resolve_data_dir(data_dir) / "raw"
     raw.mkdir(parents=True, exist_ok=True)
+    _warn_if_shared(raw)
     for name, src in SOURCES.items():
         target, part = raw / name, raw / (name + ".part")
         if target.exists() and not force:
