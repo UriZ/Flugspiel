@@ -105,10 +105,18 @@ def test_col_covers_screen():
 
 
 def test_luminance_roundtrip(enc):
-    """AC6 roundtrip: a single missile's darkest column is the column it occupies."""
-    for x in np.linspace(0.0, 1.0, 20):
-        frame = enc.encode(state([dict(x=float(x), y=0.4)]))
-        assert int(np.argmin(frame.luminance)) == int(column(x, 36)), f"x={x}"
+    """AC6 roundtrip: a missile's darkest column is the one §3.3 puts it in.
+
+    Expected columns are literal. Comparing against `column(x, 36)` cannot fail —
+    `_luminance` *builds* the shadow from that same call — and leaves §3.3's normative
+    `clip(floor(x*columns), 0, columns-1)` unpinned: `np.floor` -> `np.round` in
+    `mapping.py` keeps the self-referential form green while moving x=0.515 from 18 to 19.
+    """
+    cases = [(0.0, 0), (0.0139, 0), (0.25, 9), (0.49, 17), (0.5, 18), (0.515, 18),
+             (0.75, 27), (0.999, 35), (1.0, 35)]
+    for x, expected in cases:
+        frame = enc.encode(state([dict(x=x, y=0.4)]))
+        assert int(np.argmin(frame.luminance)) == expected, f"x={x}"
 
 
 def test_azimuth_from_hex(enc):
