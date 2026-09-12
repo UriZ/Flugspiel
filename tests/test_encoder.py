@@ -172,14 +172,38 @@ def test_loom_ttc(enc, y, vy, expected):
 
 
 def test_loom_side_split(enc):
-    frame = enc.encode(state([dict(x=0.2, y=0.6, vy=0.2), dict(x=0.9, y=0.2, vy=0.1)]))
+    two = [dict(x=0.2, y=0.6, vy=0.2), dict(x=0.9, y=0.2, vy=0.1)]
+    frame = enc.encode(state(two))
     assert frame.loom["L"] == pytest.approx(0.809, abs=1e-3)
     assert frame.loom["R"] == pytest.approx(0.155, abs=1e-3)
+
+    # Telemetry agreeing with the truth is not enough: each hemisphere's *injection* must
+    # carry its own side's value. A side-blind encoder looks perfect in `frame.loom`.
+    gain = next(s.gain for s in enc.mapping.sites if s.name == "looming_L")
+    assert amounts_of(frame, enc.brain.cells(["LC4", "LPLC2"], side="L")) == pytest.approx(
+        gain * 0.809, abs=1e-3)
+    assert amounts_of(frame, enc.brain.cells(["LC4", "LPLC2"], side="R")) == pytest.approx(
+        gain * 0.155, abs=1e-3)
 
     flipped = Encoder(enc.brain, Mapping.load(cfg(loom={**enc.mapping.loom, "side_flip": True})))
     swapped = flipped.encode(state([dict(x=0.2, y=0.6, vy=0.2), dict(x=0.9, y=0.2, vy=0.1)]))
     assert swapped.loom["L"] == pytest.approx(0.155, abs=1e-3)
     assert swapped.loom["R"] == pytest.approx(0.809, abs=1e-3)
+
+
+def test_loom_ttc_min_is_a_floor(enc):
+    """`ttc_min` guards the division and caps very close threats.
+
+    Under the *default* config it is invisible — tau/ttc_min = 4.0 is above the clip, so
+    the clip subsumes it. It only becomes observable when tau < ttc_min, which is the
+    configuration this test pins; without the floor, a missile 0.05 screens away at
+    vy = 0.5 would read 1.0 instead of 0.2.
+    """
+    slow = Encoder(enc.brain, Mapping.load(cfg(loom={**enc.mapping.loom,
+                                                     "tau": 0.1, "ttc_min": 0.5})))
+    assert slow.encode(state([dict(x=0.1, y=0.8, vy=0.5)])).loom["L"] == pytest.approx(0.2)
+    at_ground = slow.encode(state([dict(x=0.1, y=enc.mapping.loom["y_ground"], vy=0.5)]))
+    assert at_ground.loom["L"] == pytest.approx(1.0), "ttc == 0 must not divide by zero"
 
 
 def test_loom_saturates_at_one(enc):
@@ -239,6 +263,28 @@ def test_non_finite_health_and_hp_are_counted(enc):
     assert frame.rejected == 3
     assert frame.drive == 1.0 and frame.launcher_hp[3] == 0.0
     assert np.isfinite(np.concatenate([a for _, a in frame.inject])).all()
+
+
+@pytest.mark.parametrize("rogue", [float("nan"), float("inf"), -float("inf"), -5.0, 1e9])
+def test_a_rogue_signal_cannot_inject_nan(enc, monkeypatch, rogue):
+    """#13, at the layer where the guard is actually reachable.
+
+    Wire input is sanitised on the way in (`_finite`), so no GameState can produce a
+    non-finite amount — `test_injections_are_finite_and_bounded` proves that and passes
+    even with `nan_to_num` deleted. The guard exists for the *other* input: `SIGNALS` is a
+    registry #8 extends, and a signal function returning NaN would otherwise remove a
+    neuron from the simulation permanently.
+    """
+    import src.brain.encoder as mod
+
+    monkeypatch.setitem(mod.SIGNALS, "rogue", lambda c: rogue)
+    sites = [{"name": "rogue", "types": ["LC4"], "side": None, "signal": "rogue",
+              "gain": 1.0, "gain_mod": None, "prosthesis": False, "enabled": True}]
+    frame = Encoder(enc.brain, Mapping.load(cfg(sites=sites))).encode(state())
+    amounts = np.concatenate([a for _, a in frame.inject])
+    assert len(amounts) == 2
+    assert np.isfinite(amounts).all()
+    assert ((amounts >= 0.0) & (amounts <= enc.mapping.max_inject)).all()
 
 
 def test_max_inject_clamps(enc):

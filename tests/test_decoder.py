@@ -218,9 +218,16 @@ def test_detached_is_terminal(dec):
     dec.decode(state(), 0.05)
     dec.on_result({"ok": False, "reason": "detached"})
     assert dec.halted
-    drive(dec, steps=100, cells=dec.brain.cells(["DNp01", "DNa02"]))
+
+    # A halted decoder must stay silent under input that would otherwise emit: a *fresh*
+    # fire edge (the latch released first) and a one-sided DNa02 drive that would aim.
     for _ in range(10):
+        dec.rates["fire"] = 0.0
         assert dec.decode(state(), 0.05) == {"action": "noop"}
+        dec.rates["fire"] = 50.0
+        drive(dec, steps=20, cells=dec.brain.cells(["DNa02"], side="L"))
+        assert dec.decode(state(), 0.05) == {"action": "noop"}
+        assert dec.crosshair_x == 0.5, "a halted decoder must not move the crosshair either"
     dec.on_result({"ok": True})
     assert dec.decode(state(), 0.05) == {"action": "noop"}, "never retried"
 
@@ -362,10 +369,15 @@ def test_y_policy_fixed_ignores_threats(dec):
 # --------------------------------------------------------------------------- calibration
 
 
-def minimal_encoder(brain):
-    """An encoder over the toy brain: one inert site, so `neutral()` injects nothing."""
-    sites = [{"name": "inert", "types": ["ALT"], "side": None, "signal": "zero",
-              "gain": 1.0, "gain_mod": None, "prosthesis": False, "enabled": True}]
+def biased_encoder(brain, gain=1.0):
+    """An encoder whose neutral frame drives DNa02-**L** only.
+
+    Reproduces §2.4's awkward finding in miniature: at a symmetric *command* the laterality
+    index sits far from zero (measured +0.365 on the real brain), so `calibrate()` has to
+    measure it. `aim_err_L` is 0.5 on an empty sky, so this injects `gain/2` per step.
+    """
+    sites = [{"name": "bias", "types": ["DNa02"], "side": "L", "signal": "aim_err_L",
+              "gain": gain, "gain_mod": None, "prosthesis": True, "enabled": True}]
     return Encoder(brain, Mapping.load(cfg(sites=sites)))
 
 
@@ -374,16 +386,30 @@ def test_calibrate_measures_the_zero_on_this_brain(dec):
     assert dec.mapping.aim["zero"] is None
     fresh = Decoder(dec.brain)
     assert fresh.aim_zero is None
-    zero = fresh.calibrate(minimal_encoder(dec.brain), steps=50, settle=10)
+    zero = fresh.calibrate(biased_encoder(dec.brain, gain=3.0), steps=200, settle=50)
     assert zero == fresh.aim_zero and math.isfinite(zero)
+    assert zero > 0.5, f"a one-sided neutral frame must measure a biased zero, got {zero:.3f}"
     assert fresh.crosshair_x == 0.5 and fresh.stats["actions"] == 0
+
+    # And the measured zero is what cancels it: the same frame now commands nothing.
+    fresh.calibrate(biased_encoder(dec.brain, gain=3.0), steps=200, settle=50)
+    assert fresh._command() == 0.0, "the measured zero must cancel the resting bias"
+
+
+def test_unmeasured_zero_would_drift(dec):
+    """The other half of the above: without calibration the same brain aims right forever."""
+    naive = Decoder(dec.brain)
+    frame = biased_encoder(dec.brain, gain=3.0).neutral()
+    for _ in range(200):
+        naive.observe(dec.brain.step(inject=frame.inject), DT)
+    assert naive.aim_zero is None and naive._command() > 0.5
 
 
 def test_calibrate_is_skipped_when_config_pins_the_zero(dec):
     pinned = Decoder(dec.brain, Mapping.load(cfg(aim={**dec.mapping.aim, "zero": 0.25})))
     assert pinned.aim_zero == 0.25
     steps = pinned.brain.steps
-    assert pinned.calibrate(minimal_encoder(dec.brain)) == 0.25
+    assert pinned.calibrate(biased_encoder(dec.brain)) == 0.25
     assert pinned.brain.steps == steps, "a pinned zero must not step the brain"
 
 
