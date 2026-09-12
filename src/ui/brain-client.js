@@ -61,6 +61,7 @@ export function createBrainClient({ url = resolveUrl(), onReady, onFrame, onConn
   let retryAt = 0;
   let timer = null;
   let deliberate = false;
+  let ticker = null;
   let lastFrameMs = -Infinity;
   let lastStateMs = -Infinity;
   const stats = { frames: 0, bad: 0, lastFrameMs: 0 };
@@ -131,6 +132,8 @@ export function createBrainClient({ url = resolveUrl(), onReady, onFrame, onConn
     clearTimeout(timer);
     timer = null;
     deliberate = false;
+    // `stale` is a time-based transition, not an event, so it needs a clock of its own.
+    if (!ticker) ticker = setInterval(derive, DERIVE_MS);
     ready = null;
     setConn('connecting');
     try {
@@ -180,14 +183,14 @@ export function createBrainClient({ url = resolveUrl(), onReady, onFrame, onConn
     }
   };
 
-  setInterval(derive, DERIVE_MS); // `stale` is a time-based transition, not an event
-
   return {
     connect,
     close() {
       deliberate = true;
       clearTimeout(timer);
+      clearInterval(ticker);
       timer = null;
+      ticker = null;
       ws?.close();
     },
     reconnectNow() {
