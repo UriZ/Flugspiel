@@ -369,9 +369,12 @@ def _stream(src: Source, part: Path, name: str) -> None:
                 elapsed = time.monotonic() - began
                 if elapsed > _RATE_GRACE and (got - start) / elapsed < _MIN_RATE:
                     # Keep the .part, unlike the oversize abort above: these are good
-                    # bytes that hash into the final file, and `download()` retries three
-                    # times. Deleting them would make a sub-floor link accumulate nothing
-                    # across attempts or across runs. Peak disk stays bounded by the
+                    # bytes that hash into the final file. Nothing retries them in this
+                    # process — `_stream` is called outside `download()`'s try, so this
+                    # abort propagates out of `download()` and the retry loop only ever
+                    # re-runs a `_verify` failure — so the prefix is what the *next run*
+                    # resumes from via Range. Deleting it would make a sub-floor link
+                    # accumulate nothing, ever. Peak disk stays bounded by the
                     # `got > src.size` guard.
                     f.close()
                     raise ConnectomeError(

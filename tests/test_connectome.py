@@ -539,8 +539,9 @@ def test_stream_aborts_on_a_slow_drip(tmp_path, monkeypatch):
             c._stream(c.Source(url, 1 << 20, UNPINNED_HASH), part, "f")
         elapsed = time.monotonic() - began
     assert elapsed < 2.0, f"guard must fire mid-drip, not at EOF (took {elapsed:.1f}s)"
-    # Unlike the oversize abort, the prefix is kept: those bytes are good and
-    # `download()` retries, so deleting them would mean zero net progress ever.
+    # Unlike the oversize abort, the prefix is kept: those bytes are good and the next
+    # run resumes from them via Range (nothing retries a rate abort in-process — it
+    # propagates out of `download()`), so deleting them would mean zero net progress ever.
     assert part.stat().st_size > 0, "a rate abort must leave the prefix for resume"
 
 
