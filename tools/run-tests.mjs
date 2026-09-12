@@ -53,6 +53,7 @@ if (files.length === 0) {
 process.chdir(ROOT);
 
 const perFile = new Map(files.map((f) => [f, null]));
+const crashed = new Set();
 let totals = null;
 
 const stream = run({ files });
@@ -60,6 +61,9 @@ stream.on('test:summary', (d) => {
   if (d.file) perFile.set(d.file, d.counts);
   else totals = d.counts;
 });
+// A file that throws on import also emits no summary. It is already failing the run;
+// calling it "declared no tests" would send the reader hunting for an empty file.
+stream.on('test:fail', (d) => { if (d.file) crashed.add(d.file); });
 
 for await (const chunk of stream.compose(tap)) process.stdout.write(chunk);
 
@@ -68,7 +72,7 @@ const fail = (msg) => {
   process.exitCode = 1;
 };
 
-const silent = files.filter((f) => !perFile.get(f)?.tests);
+const silent = files.filter((f) => !perFile.get(f)?.tests && !crashed.has(f));
 if (silent.length > 0) {
   fail(`${silent.length} of ${files.length} test file(s) declared no tests — refusing to report a `
      + `vacuous pass. node --test scores an empty file as one passing test:\n`
