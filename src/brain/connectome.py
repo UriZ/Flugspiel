@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -248,12 +249,32 @@ def _verify(path: Path, src: Source) -> str:
 
 
 def _open_nofollow(path: Path, *, append: bool):
-    """Open `path` for writing, refusing to follow a symlink.
+    """Open `path` for writing, refusing anything that is not an unshared regular file.
 
     A plain `open()` follows symlinks, so a pre-planted `<name>.part` symlink redirects
     server-controlled bytes through to any file the running user can write — and the
     `.part` is only unlinked *after* `_verify` fails, so the hash pin does not help: it
     protects what gets parsed, not what gets written (#18).
+
+    `O_NOFOLLOW` only rejects a symlink *as the final component*, and says nothing about
+    what the opened inode is (#21). Two things get through it:
+
+    * a **hardlink** — the `.part` really is a regular file, it is just a second name for
+      the victim's inode, so the same overwrite lands without a symlink anywhere;
+    * a **FIFO** — `os.open(O_WRONLY)` blocks until a reader appears, and it blocks
+      before the first HTTP request, so `urlopen(timeout=...)` never gets to apply.
+
+    `O_NONBLOCK` turns the FIFO hang into ENXIO at the open (it has no effect on regular
+    files on macOS or Linux, so it is left set rather than cleared afterwards), and
+    `fstat` on the descriptor — not the path, so nothing can be swapped underneath it —
+    rejects the hardlink and any device node or socket planted there.
+
+    Truncation is deferred to an explicit `ftruncate` *after* that check instead of
+    `O_TRUNC` in the flags: `O_TRUNC` fires inside `os.open`, so it would zero a
+    hardlinked victim before there was anything to check. `O_EXCL` would be the stronger
+    fix for the fresh-download path, but it is wrong here — `_stream` resets `start` to 0
+    when the server ignores or mismatches the Range, and re-opens an already-existing
+    `.part` with `append=False`, which since #17 is the normal state after an abort.
 
     Only reachable when FLUGSPIEL_DATA points somewhere another local user can write — a
     shared scratch volume, /tmp/flugspiel, a CI runner cache — which is exactly what the
@@ -263,13 +284,28 @@ def _open_nofollow(path: Path, *, append: bool):
     Mode 0o644 matches what `open(path, "wb")` produced under the usual umask, so a
     deliberately shared 1.1 GB cache stays readable; tightening it is a separate call.
     """
-    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
-    flags |= os.O_APPEND if append else os.O_TRUNC
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+    flags |= os.O_APPEND if append else 0
     try:
         fd = os.open(path, flags, 0o644)
-    except OSError as exc:  # ELOOP: something pre-planted a symlink at the .part path
+    except OSError as exc:  # ELOOP: a symlink; ENXIO: a readerless FIFO
         raise ConnectomeError(
             f"{path} is not a regular file ({exc}); remove it and retry") from exc
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise ConnectomeError(
+                f"{path} is not an exclusively-linked regular file "
+                f"(mode {stat.S_IFMT(st.st_mode):o}, {st.st_nlink} links); remove it and retry")
+        if not append:
+            os.ftruncate(fd, 0)
+    except OSError as exc:
+        os.close(fd)
+        raise ConnectomeError(
+            f"{path} cannot be opened for writing ({exc}); remove it and retry") from exc
+    except BaseException:
+        os.close(fd)
+        raise
     # O_APPEND is a kernel flag, so writes append regardless of the mode string here.
     return open(fd, "wb", closefd=True)
 
