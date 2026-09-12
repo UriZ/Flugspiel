@@ -21,6 +21,26 @@
 // 30 fps / 50 ms p95 to sit clear of that. Headless numbers are a floor, not a
 // prediction of a real display — rerun with --headful on the target machine before
 // claiming AC5 on real hardware.
+//
+// Expected output — against the real shell, `--url /index.html`, same environment,
+// 2026-09-13, #5 AC5. All three phases and both loops PASS:
+//   steady   59.2 - 60.0 fps   p95 16.8 ms
+//   drag     38.3 - 59.6 fps   p95 16.7 - 33.4 ms
+//   stacked  53.8 - 60.0 fps   p95 16.8 ms
+// The drag low of 38.3 was taken at loadavg 27.8 with five other agents running, and
+// still cleared the bar — treat it as the floor, not the expectation.
+//
+// **What the shell costs over shell-probe.html: below what this method can resolve
+// here, and NOT the ~6 fps a single pair of runs appears to show.** Measured by
+// interleaving the two URLs round-robin rather than running one after the other
+// (loadavg fell 25 -> 12 across the four runs, which a sequential A-then-B would have
+// attributed to the variant):
+//   round 1   probe drag 59.6   index drag 52.9
+//   round 2   probe drag 48.8   index drag 59.6      <- the order flips
+// The variant with the lower number changes between rounds, so the 48.8-59.6 drag
+// spread is machine load. Steady and stacked sit at or within 2 fps of the 60 fps cap
+// for both URLs, where a cost this small cannot be resolved at all. Do not quote a
+// per-phase delta from a single pair of runs.
 
 import http from 'node:http';
 import fs from 'node:fs/promises';

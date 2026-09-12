@@ -297,7 +297,7 @@ if (NO_BRAIN) {
             && live.phase === 'playing' && live.accepted > 0 && live.rejected === 0
             && live.sendErrors === 0 && live.formula.shown === live.formula.correct
             && live.formula.naive !== live.formula.correct,
-      `conn="${live.a.conn}" step ${stepA} -> ${stepB} (+${stepB - stepA} in 1 s) score="${live.a.score}" (game ${live.gameScore}) spikes/s="${live.b.spikes}" [mean pop ${live.pop} x sim_hz ${live.simHz.toFixed(2)}] title="${live.b.title}" | loop: phase=${live.phase} emitted=${live.emitted} accepted=${live.accepted} rejected=${live.rejected} sendErrors=${live.sendErrors} frames=${live.stats.frames} bad=${live.stats.bad}`);
+      `conn="${live.a.conn}" step ${stepA} -> ${stepB} (+${stepB - stepA} in 1 s) score="${live.a.score}" (game ${live.gameScore}) spikes/s="${live.formula.shown}" == fmtRate(mean popcount ${live.formula.meanPop} over ${live.formula.n} frames x sim_hz ${live.formula.simHz.toFixed(2)}) = ${live.formula.correct}; the naive popcount x observed ${live.formula.obsHz.toFixed(1)} Hz would read ${live.formula.naive} (R4). title="${live.b.title}" | loop: phase=${live.phase} emitted=${live.emitted} accepted=${live.accepted} rejected=${live.rejected} sendErrors=${live.sendErrors} frames=${live.stats.frames} bad=${live.stats.bad}`);
 
     // A5 before A2b, while frames are still arriving.
     const st = (t) => { const d = []; for (let i = 1; i < t.length; i++) d.push(t[i] - t[i - 1]);
