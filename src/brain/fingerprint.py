@@ -26,7 +26,7 @@ trajectory" deserve different answers:
 read. Including it unconditionally would make a numpy recording refuse a replay that is
 bit-identical — measured, not assumed.
 
-The connectome digest is the expensive field by two orders of magnitude, so it is computed
+The connectome digest is by a wide margin the expensive field, so it is computed
 lazily and never during `FlyBrain.__init__`: pass `connectome=False` for a fingerprint of
 everything else. `identity_only()` needs neither a connectome nor numba and is what
 `--check` uses to pin `PARTITIONS` against `trajectory.lock.json`.
@@ -254,22 +254,55 @@ def read_lock(path: Path = LOCK_PATH) -> dict:
 def check_lock(path: Path = LOCK_PATH, *, brain: lif.FlyBrain | None = None) -> list[str]:
     """Verify the shipped constants against the lock. Returns a list of complaints.
 
-    The connectome-free half runs anywhere in milliseconds and is the half that pins
-    `PARTITIONS`. The spike digest is checked only when a brain is supplied, since it
-    needs the built connectome and the backend the lock was taken on.
+    Three tiers, cheapest first. The constants run anywhere in microseconds and are the
+    half that pins `PARTITIONS`; the connectome and spike digests need a brain, and the
+    spike digest additionally needs the backend the lock was taken on.
+
+    A `None` on either side of a digest means *not measured*, never *empty* — the same
+    convention `check()` uses. A lock written without a brain therefore says nothing about
+    the connectome or the trajectory rather than asserting they were blank, and `--check`
+    reports what it actually verified rather than what it could have.
+
+    The connectome digest is checked **before** the spike digest and reported *instead* of
+    it (#51). A changed connectome moves the train by construction, so running both would
+    bury the specific diagnosis under the general one and pay for a trajectory the answer
+    is already known for. Order also repairs a claim this module makes about itself: a
+    spike mismatch is documented as meaning the *code* moved, and that only follows once
+    the connectome has been ruled out. It costs about what it saves — the two digests are
+    the same order of magnitude — so this buys specificity, not speed, except in the
+    failing case.
     """
     lock = read_lock(path)
-    bad = _diff(lock.get("identity") or {}, identity_only(backend=lock.get("backend", "numba")))
-    bad = [f"lock {d}" for d in bad]
-    if brain is not None and lock.get("spike_digest"):
+    bad = [f"lock {d}" for d in
+           _diff(lock.get("identity") or {}, identity_only(backend=lock.get("backend", "numba")))]
+    if brain is None:
+        return bad
+
+    ruled_out = False
+    if lock.get("connectome"):
+        got = connectome_digest(brain.W, brain.meta)
+        if got != lock["connectome"]:
+            bad.append(f"connectome digest: {lock['connectome']} -> {got}; this brain was "
+                       f"built from different weights or metadata, so the spike digest "
+                       f"could not have matched and was not run")
+            return bad
+        ruled_out = True
+    if lock.get("spike_digest"):
         if brain.backend != lock.get("backend"):
             bad.append(f"lock was taken on backend {lock['backend']!r}, this brain is "
                        f"{brain.backend!r}; the spike digest is not comparable")
         else:
             got = spike_digest(brain, int(lock["steps"]))
             if got != lock["spike_digest"]:
+                # Conditioned on having actually run the connectome digest. Saying "the
+                # code moved" against a lock that records no connectome digest would name
+                # a cause this check never eliminated.
+                why = ("the connectome and every identity field match, so the code moved"
+                       if ruled_out else
+                       "this lock carries no connectome digest, so the code and the "
+                       "connectome are both still in play and this cannot tell them apart")
                 bad.append(f"spike digest over {lock['steps']} steps: "
-                           f"{lock['spike_digest']} -> {got}")
+                           f"{lock['spike_digest']} -> {got}; {why}")
     return bad
 
 
@@ -323,8 +356,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("\nIf the change was deliberate, re-run with --update and commit the lock "
                   "in the same change, so the new trajectory is on the record.")
             return 1
-        scope = "constants and spike digest" if brain is not None else "constants only"
-        print(f"trajectory lock ok ({scope})")
+        # Derived from the lock, not from `brain is not None`: a lock written by
+        # `--update --no-connectome` carries null digests, and the old message called
+        # that "constants and spike digest" on any machine that had a brain to load.
+        lock = read_lock(LOCK_PATH)
+        checked = ["constants"]
+        if brain is not None:
+            checked += [n for n, k in (("connectome digest", "connectome"),
+                                       ("spike digest", "spike_digest")) if lock.get(k)]
+        print(f"trajectory lock ok ({', '.join(checked)})")
         return 0
 
     fp = (fingerprint(brain) if brain is not None
