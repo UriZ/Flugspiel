@@ -26,9 +26,16 @@ Three factors, per #7 §5:
   applied — it is the biologically correct site and #6 draws it — but it is inert on rate
   and no criterion here claims otherwise.
 
-**What this module does not do.** Weight change is not learning. The mushroom body's
-output does not reach the game's readout neurons on this connectome (#7 §3.4), so nothing
-here may be described as learning, training, progress or improvement in any artefact.
+**What this module does not do.** Weight change is not learning. The finding, in the
+words the issue settled on:
+
+    Reward and punishment events derived from `launchers_alive` drive PAM11 and PPL101
+    and measurably modulate KC->MBON efficacy and mushroom-body output. The modulation
+    does not reach the game's readout neurons, and no behavioural change is claimed.
+
+The pre-registered hypothesis that a change reaches the readout came out FALSE, so nothing
+here may be described as learning, training, progress, improvement, performance or score
+in any artefact.
 `telemetry()` therefore carries `prosthetic_sites` in the *same object* as `value`: a
 reward number that outlives its connection in a log or a screenshot still travels with its
 disclosure. See #7 §8, §9.3.
@@ -72,7 +79,16 @@ discharge the whole trace in one tick."""
 
 
 class RewardError(ValueError):
-    """A reward config that cannot be trusted to run. Raised at construction only."""
+    """A reward loop that cannot be trusted to run.
+
+    Raised at construction for a bad config, and from `_apply` if the values it is about
+    to write into `W` are not finite. The second case is loud on purpose. #13's failure
+    mode is that a non-finite value is *silent*: it fails `v >= threshold`, so the neuron
+    never fires, never resets and is gone from the network for the rest of the session
+    with nothing to observe. `FlyBrain` guards both of its own entry points and
+    `_invariants` checks `W` on the load path, but this loop writes `W.data` in place
+    **after** all of them, so it is the last place the check can be made at all.
+    """
 
 
 @dataclass(frozen=True)
@@ -220,6 +236,14 @@ class RewardLoop:
                 raise RewardError(f"compartment {part.name!r}: no KC->MBON edges onto "
                                   f"{list(part.mbon_types)}; nothing for it to modulate")
             w0 = np.asarray(brain.W.data[sel], dtype=np.float32).copy()
+            # The base case for the write guard in `_apply`: every value that loop can
+            # produce is a function of `w0`, so if these are finite and positive the
+            # induction holds and nothing downstream can go non-finite on its own. Also
+            # the strict positivity §5.3 relies on — KCs are wholly cholinergic, so with
+            # `w_min > 0` no edge can ever cross zero and flip sign.
+            if not (np.isfinite(w0).all() and (w0 > 0).any()):
+                raise RewardError(f"compartment {part.name!r}: baseline KC->MBON weights "
+                                  f"must be finite and positive")
             bounds = np.stack((w0 * self.cfg.w_min, w0 * self.cfg.w_max))
             self._parts.append({
                 "cfg": part, "sel": sel, "w0": w0,
@@ -321,12 +345,22 @@ class RewardLoop:
             return self._resync(alive, t, "anomalies")
         if self._armed and t - self._armed_at >= self.cfg.t_survive:
             # One-shot: the game can stall with launchers still standing, and a repeating
-            # survival reward would then pay out forever (#7 §4.2).
+            # survival reward would then pay out forever (#7 §4.2). With `_resync` leaving
+            # the timer disarmed, this caps a session at one reward per punishment.
             self._armed = False
             return RewardEvent(REWARD, self.cfg.k_event, t)
         return NO_EVENT
 
     def _resync(self, alive: int | None, t: float, counter: str) -> RewardEvent:
+        """Disarmed, deliberately: at a session start the fly has not survived anything.
+
+        #7 §4.2's prose has the timer arming at session start too, which would pay out for
+        an interval whose opening boundary is the game being started rather than anything
+        the fly did — the reward-for-nothing failure the `session` counter exists to
+        prevent, arriving by another door. §4.3 is the normative section and it wins; the
+        TL confirmed it. The observable consequence is that the first survival interval of
+        a session is unpayable, so rewards can never outnumber punishments.
+        """
         self._prev_alive = alive
         self._armed, self._armed_at = False, t
         self._cumulative = 0.0
@@ -365,6 +399,13 @@ class RewardLoop:
             # In place through `.data`: both LIF kernels read it every step, and rebinding
             # `brain.W` would silently detach the loop from the brain (#7 §6).
             np.clip(data[sel] + delta, part["lo"], part["hi"], out=delta)
+            # Guard what is written, not the array afterwards (#13). `np.clip` propagates
+            # a NaN rather than bounding it, so the clip above is not this check. On the
+            # event path, not the hot loop: events are seconds apart.
+            if not np.isfinite(delta).all():
+                raise RewardError(f"refusing to write non-finite weights into compartment "
+                                  f"{part['cfg'].name!r} on a {event.kind} of magnitude "
+                                  f"{event.magnitude}")
             data[sel] = delta
 
     def efficacy(self) -> dict[str, float]:
