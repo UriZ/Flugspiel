@@ -10,9 +10,11 @@ wall clock, and exchanges text frames with whatever holds the game:
 `127.0.0.1`; `--host` exists and says in its help text not to use it. The only access
 control is an Origin allowlist, because Starlette applies no Origin check of its own and
 without one any page the user browses could open this socket, evict the real UI and drive
-the game. Inbound frames are capped by `ws_max_size`; malformed input is answered with a
+the game. Inbound frames are capped at `MAX_FRAME_BYTES` by the reader itself, so the cap
+does not depend on how the process was launched; malformed input is answered with a
 non-fatal `error` and the connection is kept, since one corrupt frame must not end a
-research session. State *contents* are not re-validated here — `Encoder.encode` never
+research session. An oversize frame is the one exception and closes with 1009 — it is not
+a frame this protocol can have meant. State *contents* are not re-validated here — `Encoder.encode` never
 raises on them and counts what it coerced; the server's duty is to surface that count.
 
 **The reader never encodes and never steps.** It parses JSON into a single latest-wins
@@ -57,7 +59,14 @@ from src.brain.reward import RewardError, RewardLoop  # noqa: E402
 PROTOCOL = 1
 MAX_FRAME_BYTES = 131072
 """Inbound cap. Tripping it closes the connection (1009), so it is set far above a
-realistic state — a late wave must never drop the controller."""
+realistic state — a late wave must never drop the controller.
+
+Enforced in `Session._read`, and passed to `ws_max_size` as well. It has to be both: the
+launch argument rejects the frame earlier, before the whole thing is buffered, but it is
+an argument to one launch command. Under any other invocation of the same `app` the
+websocket layer's own default applies instead, which is two orders of magnitude larger —
+so a cap that lived only there would be a property of how the server was started rather
+than of the server (#57)."""
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
@@ -129,7 +138,13 @@ class Runtime:
                 "backend": self.brain.backend, "sim_hz": CONFIG.sim_hz,
                 "step_dt": self.brain.params.dt, "ac2_capable": self.ac2_capable,
                 "regions": list(self.regions), "populations": self.populations,
-                "prosthetic_sites": list(self.encoder.prosthetic_sites)}
+                # Both, because since #40 the second is the live one: no prosthesis is
+                # enabled, and a client told only that would conclude the encoding was
+                # the fly's own. These are the encoder's RAW lists — `[]` here is the
+                # honest answer for "none enabled", unlike the reward block's, which
+                # carries sentinels because it travels with a number (#48).
+                "prosthetic_sites": list(self.encoder.prosthetic_sites),
+                "coded_sites": list(self.encoder.coded_sites)}
 
     def snapshot(self, fired: np.ndarray, reward: dict, meta: dict) -> dict:
         mask = self._mask
@@ -198,6 +213,16 @@ class Session:
             if raw is None:
                 await self._error("bad_envelope", "binary frames are not accepted")
                 continue
+            if _over_cap(raw):
+                # Closed, not answered: `MAX_FRAME_BYTES` is far above any real state, so
+                # this is not a corrupt frame to survive but a client sending something
+                # this protocol has no shape for. 1009 is what the websocket layer would
+                # have sent, and matching it keeps the two enforcement points
+                # indistinguishable from the client's side.
+                with contextlib.suppress(Exception):
+                    await self.ws.close(code=1009, reason="frame too large")
+                self.stop = True
+                return
             await self._handle(raw)
 
     async def _handle(self, raw: str) -> None:
@@ -225,9 +250,16 @@ class Session:
             self.rt.decoder.on_result(obj.get("result"))
             if self.rt.decoder.halted and not self.detached_reported:
                 self.detached_reported = True
-                # Terminal. The server never re-arms the bridge, resets the decoder or
-                # retries: a detached bridge reports ok:true and fires nothing. Replacing
-                # it is the client's job. Snapshots keep flowing so the viz stays live.
+                # The server never re-arms the bridge, resets the decoder or retries
+                # *in response to a result*: a detached bridge reports ok:true and fires
+                # nothing, and replacing it is the client's job. Snapshots keep flowing
+                # so the viz stays live.
+                #
+                # Not terminal without qualification, and this comment used to say it
+                # was. `halted` has THREE exits — a new connection, an explicit
+                # `reset scope=decoder`, and a session change, which resets the decoder
+                # from `_track_session`. The last one is deliberate and argued there;
+                # what it is not is absent (#36).
                 await self._send({"type": "error", "code": "bridge_detached",
                                   "detail": "decoder halted", "fatal": False})
         elif kind == "reset":
@@ -405,6 +437,19 @@ def _nonfinite(obj: Any, path: str = "") -> list[str]:
 
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _over_cap(raw: str) -> bool:
+    """Is this frame over `MAX_FRAME_BYTES` *on the wire*?
+
+    Bytes, because that is what the cap means and what `ws_max_size` measures — but
+    without paying for an encode on every frame. A string with more characters than the
+    cap cannot be under it in bytes, and an all-ASCII string is one byte per character;
+    only a multi-byte string under the character count needs the real answer. `isascii()`
+    reads a flag rather than scanning."""
+    if len(raw) > MAX_FRAME_BYTES:
+        return True
+    return not raw.isascii() and len(raw.encode()) > MAX_FRAME_BYTES
 
 
 @contextlib.asynccontextmanager
