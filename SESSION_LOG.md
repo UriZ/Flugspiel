@@ -1812,3 +1812,45 @@ Commands: `PYTHONPATH=. python tools/spike/reward-substrate.py` (seconds, determ
 - [workflow]: the vacuity check found a real defect here — both WebGL models were measured for two full runs while rendering every neuron dim, and only the screenshot caught it. A spike that reports a number should be required to also report evidence the work happened, not just that it was fast. Cheapest form is a screenshot plus a non-background pixel count
 - [CLAUDE.md]: "backlog notes are user intent, not verified fact" should extend to facts inherited between agents. "Only 28 of 6,006 photoreceptors have a soma position" was true and was carried forward as "do not assume coordinates exist"; the real figure is 84.4% across the connectome, and taking it at face value would have cost #6 its anatomy
 - [workflow]: a killed agent's in-flight work should be committed with its expected-output headers stripped or marked UNVERIFIED. `34dedbe` shipped a header asserting a results table that had never been run
+
+---
+### [2026-09-13 13:40] — developer — #27, #28
+**Task**: The weapon channel is documented inert but switches launchers 5–16×/min (#27); `columns` validates as any `int >= 1` but only 36 works (#28).
+**Result**: COMPLETED
+**Files changed**: `src/brain/decoder.py`, `src/brain/encoder.py`, `src/brain/mapping.py`, `src/brain/mappings/missile_attack.json`, `tests/test_decoder.py`
+**Commits**: `5b4e25f` (#28), `696c191` (#27). Local only, not pushed.
+
+**Key changes**:
+- `encoder.py:135-166` — `photoreceptor_columns` measures the hex domain from `meta.ol_hex[:, 0]` and rescales it onto `[0, columns-1]` instead of assuming `h - 1` / `columns - h` land in range.
+- `mapping.py:100-108` — `columns` now validates as `>= 2`, with the coupling (and its absence) stated next to the check.
+- `mapping.py:56-57, 216-221` — `Channel.enabled`, mirroring `Site.enabled`; `decoder.py:239-241` — `_trigger` returns immediately for a disabled channel without touching latch state.
+- `mappings/missile_attack.json:34-35` — `weapon.enabled: false`.
+- `decoder.py:22-33` — the "this channel never fires" claim replaced.
+- `tests/test_decoder.py:40-52` — new `wdec` fixture (weapon enabled); D9's four weapon tests moved onto it.
+
+**Measurements** (2026-09-13, real brain `data/weights.npz`, `backend=numba`, `seed=64`, 120 s per condition, decode 16.7 Hz; harness `/private/tmp/.../scratchpad/{capture27,sweep27,cols28b,cols28c,live2728}.py`):
+- **#27 — the threshold sat inside the noise, not above it.** Pooled DNg100+MDN EMA at an empty sky: p50 **0.043**, p90 1.127, **p99 2.120**, max 3.767 Hz, against `on_hz = 2.0`. Under maximum looming the max is **3.925** Hz — barely above the resting maximum. Switches/min by `on_hz`: 2.0 → 5.5/9.0/13.5/14.0; 3.0 → 1.0/3.0/5.0/6.5; 4.0 → 0/0/1.0/0 (non-monotone); **≥ 5.0 → 0 under every condition including maximum threat**. There is no band that is both quiet at rest and reachable, which is why the fix is a flag and not a retune.
+- Per-type: DNg100 0.05–0.09 Hz, MDN 0.28–0.57 Hz — **MDN carries 85–91 %** of the pool, and MDN is the type with no game signal wired to it.
+- **After**: 0.0 switches/min at every condition, `stats['weapon_switches'] = 0` over 2,000 decode ticks per row.
+- **`fire` resting rate, for #27 AC3**: pooled DNp01 **0.08 Hz** at an empty sky, **0.0 false fires/min** over 120 s under the shipped config, down from the 5.0/min recorded on #27. Fixed by #25's `on_hz` 3.0 → 4.0. General rule: `on_hz` must exceed `(1−exp(−dt/tau))/dt`, the EMA step of one isolated spike — **3.844 Hz** at `tau = 0.25`, **1.961 Hz** at `tau = 0.5`.
+- **#28 — `columns = 36` is bit-identical to the old map** (checked against a verbatim copy of the pre-fix implementation over all 5,861 assigned photoreceptors). `ol_hex1` is `1..36`, 36 distinct, over 23,720 annotated neurons — as the issue reports.
+- Column spans, old → new: at 72 **L 0..35 / R 36..70 → L 0..71 / R 0..69**; at 360 **L 0..35 / R 324..358 → L 0..359 / R 0..349**; at 37 R **1..35 → 0..35**. Mirroring (`L[h] == columns-1 − R[h]`) now holds exactly at every value.
+- Hexes forced onto one column, left eye: at 18 **19 → 2**; at 9 **28 → 5**. Uniform downsampling instead of welding half the retina to an edge pixel.
+- R never reaching the top column (0..34 at 36, 0..69 at 72) is **connectome coverage, not the mapping** — hex 1 has no right-eye photoreceptor (L 36 distinct hexes, R 35 spanning 2..36). Identical before and after at 36.
+- End to end at `columns` ∈ {2, 9, 18, 36, 37, 72, 360}: `unassigned = 145` constant, all injections in `[0, max_inject]`, `argmin(luminance)` tracks a missile at `x = 0.800` to 1.000 / 0.875 / 0.824 / **0.800** / 0.806 / 0.803 / 0.802.
+- `columns = 1` now rejected: at 1 every position is left of `columns/2`, so `loom_R` is pinned at 0 and half the fire pathway is dead — silent, config-reachable, the same defect class.
+
+**Testing**: testing suspended — no new tests. Named collected sets, real output, **zero skips**: `tests/test_mapping.py + test_encoder.py + test_decoder.py` → **109 passed**; `-m "not realdata"` → **194 passed, 11 deselected** of 205; `tests/test_brain_loop.py` → **5 passed** in 198 s; `npm test` → **38 pass, 0 fail, 0 skipped**. Four D9 tests broke because the shipped config now disables the weapon channel and were repaired onto a `wdec` fixture with it enabled; no assertion weakened, and the mechanism stays covered for whoever wires a real signal to it. #28 needed no test repair.
+
+**Decisions taken, with the evidence**:
+- **#27 — disable, do not retune.** The channel's resting and maximum-threat EMA distributions overlap almost completely, so no threshold is both quiet at rest and reachable. Its weak looming correlate is the fire signal leaking downstream, which is worse than noise because it looks like signal: the fly would change launcher more often the closer a missile gets.
+- **#27 — `weapon` does not want `spikes_per_action`.** Sustained firing would multiply an uncommanded signal. Left edge-only, then disabled.
+- **#28 — rescale, do not reject.** Rescaling is exact at the shipped value, so tunability becomes true rather than being narrowed away.
+
+**Note**: #27 AC2 and #25 AC3 both ask for measured numbers in `decoder.py`'s docstring. The TL ruled the standing "no numbers in docstrings" rule wins and amended #25's AC3; I applied the same ruling to #27 AC2 — the false claim is replaced, the numbers are on the issue and here.
+
+**Improvement Insights**:
+- [developer.md]: add — **zsh command-substitutes backticks in `git commit -m` too, not only in `gh` comment bodies.** "Channel gains an `enabled` flag" committed as "Channel gains an  flag" and `git` exited 0. The `--body-file` rule needs to be a `-F <file>` rule for commits as well. Caught only because the shell separately printed `command not found: enabled`; with a backticked word that happens to be a real command it would have been silent.
+- [developer.md]: add — **when a channel misbehaves, measure the readout's distribution, not just its mean.** #27's mean pooled rate (0.33 Hz) looks an order of magnitude below `on_hz = 2.0` and suggests the channel cannot possibly fire. The p99 is 2.120 — the band was at the 99th percentile. A mean would have sent me looking for a retune that does not exist; the percentiles proved in one table that no threshold works.
+- [criteria.md]: an AC of the form "0 events per minute over 120 s" is satisfiable by luck. #27's AC1 was written well — it offered "**or** disabled in config so the claim is true by construction" as an explicit alternative, and that alternative is what made the fix defensible rather than a lucky threshold. Suggest generalising: any AC asserting the absence of a behaviour should name the by-construction alternative alongside the measured one.
+- [workflow]: the capture-once-sweep-offline pattern paid off a second time and is now cheap to set up — one 2.5-minute capture of the pooled trains fed both the `on_hz` sweep and the EMA percentile table for #27, and the live 120 s/condition confirmation then reproduced the replay exactly. Worth adding to `developer.md` as the standard way to tune or diagnose any brain readout.
