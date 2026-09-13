@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:viz": "python3 tools/build-viz-layout.py",
     "test": "node tools/run-tests.mjs"
   },
   "engines": {
