@@ -2913,3 +2913,151 @@ stands. I wrote to `tools/spike/` (5 new files) and `SESSION_LOG.md` and nothing
 **Improvement Insights**:
 - [developer.md]: add — **"the words already differ" is not a distinction in a zone that truncates.** I shipped `none enabled` vs `not reported` as two strings in one colour and only caught it because the TL asked. The zone's own comment says colour carries the distinction *because* words truncate first; when a fix adds a state to a set, check it against the set's existing discrimination rule, not only against the bug it was written for.
 - [criteria.md]: a gate phrased as "X renders as Y" should say **by what** — text, colour, or both. #6's gate 1 says "distinctly in pixels, not just words" and that phrasing is exactly what makes it checkable; gate 2's `prosthetic_sites` wording lacks both the owner object and the discriminator.
+
+**Exit check (added after the TL's addendum — judge-required)**: stripped-AST comparison between the gated revision and the result. `ast.parse` both, remove every module/class/function docstring node, `ast.dump` and compare exactly — comments never enter the AST, so an identical dump with docstrings stripped proves no executable line moved. `before sha256 6a9b9d3c0f48aa03c15bb832245d36b0931349c6d939cb88756d986c9961e716` (46488c8, the revision immediately before this change, i.e. exactly the hash the #20/#21 verdict was issued against) → `after 6e2f1c3af3461963d44696424d119758cb7f5711a1a4fc14e9da7ddd4afc39f8` (HEAD == working tree). **Stripped ASTs match** (70,604 chars both). `pytest tests/test_connectome.py -ra` → **58 passed, 0 skipped** in 6.11 s. Real artifact re-loaded at the new hash: (166700, 166700), 25,582,938 nonzeros, float32 CSC, worst row |w| = `1.0000000558793545`, `_invariants` clean. `_open_nofollow`'s flags and check order were not touched, so the `ftruncate`/`O_NONBLOCK` mechanism facts are inherited as descriptions of `c533e1a` as it stands. Posted on #21 (comment 5654268561).
+
+**Follow-up (TL decision B — strip the absolutes)**: commit `1447bb2`, comment-only, 7 insertions / 6 deletions. Removed the three stale absolute timings and kept the relations: `load()`'s "14 ms … against a 0.29 s load" → "well under the load it follows"; `_require`'s "(~2-3 s)" → "Seconds against a build already taking minutes"; `build()`'s "205 MB and a 0.29 s load, vs 139 MB / 16 s write / 0.83 s load" → "about half again the disk … an order of magnitude or better on both the load and the build-time write". The compression tradeoff was **re-measured before rewording** rather than inherited: compressed 132 MiB / write 23.3 s / load 1.19–1.49 s vs uncompressed 195 MiB / write 0.2 s / load 0.13–0.21 s. Note that the same uncompressed file measured 0.13–0.21 s warm here and 0.44–0.81 s earlier the same evening — one machine, minutes apart. That spread is the argument for the rule: the figure is not a property of the code. All figures, commands and date are on #21 (comment 5654285356), which also names the **three claims I could not execute** and why: `_edges`' 4.6 GB/1.5 GB arm (would need ~4.6 GB while the user's live UI runs), `_MAX_NEURONS`' `n=10**9` MemoryError (8 GB allocation), and the 2,628 optic-column figure (needs the `.xlsx` #3 dropped). Comment-only re-proven: stripped ASTs identical from the gated `6a9b9d3c…` to `dfc41906…`; `tests/test_connectome.py` 58 passed, 0 skipped. Committed in one step as `git commit <path> -F msg` — no separate `git add`.
+
+**Gain sweep (TL request) — `tools/spike/gain-sweep.py --trials 300`, read-only, loadavg 4.5**
+
+| gain | fire% | KC% | L1 Hz | L2 Hz | PR(T=500) | retina→DN | loom→DN (control) |
+|---|---|---|---|---|---|---|---|
+| 1.0 | 0.96 | **1.9** | 0.54 | 0.18 | 495.2 | **−0.0116** | +0.6741 |
+| 1.5 | 2.69 | **37.6** | 0.59 | 0.15 | 222.1 | **−0.0116** | +0.6869 |
+| 2.0 | 5.41 | 99.9 | 0.60 | 0.13 | **84.7** | −0.0158 | +0.7161 |
+| **3.0 (shipped)** | 7.72 | 100.0 | 0.60 | 0.06 | 294.4 | −0.0211 | +0.7133 |
+| 5.0 | 9.88 | 100.0 | 0.80 | 0.00 | 373.5 | −0.0116 | +0.7342 |
+
+- **The retina channel is at chance at the DN layer at all eight operating points** across a
+  5x gain range, while the photoreceptors decode at 0.909–0.924 throughout.
+- **Positive control holds everywhere** (`loom→DN` 0.674–0.735), so "retina dead" is never
+  "network dead". This column is what makes the negative interpretable.
+- **KC saturation is a sharp threshold between gain 1.5 and 2.0** (1.9% → 37.6% → 99.9%), so
+  **#29 IS fixable by gain — and fixing it changes the aim by nothing measurable.** The
+  hypothesis is refuted by intervention, not correlation.
+- PR is non-monotonic with a **minimum at gain 2.0 (84.7)**; shipped sits at 294.4.
+- L1 holds 0.54–0.80 Hz and L2 falls to 0.00 across the whole sweep: **the lamina
+  rectification is structural, not an operating-point artefact.**
+
+**Cross-issue finding for #29, reported not acted on**: `gain <= 1.5` de-saturates the KCs at
+2.69% network firing vs the shipped 7.72%. Would invalidate the calibration behind #3/#4/#7
+and need a new #24 trajectory lock. Belongs on #29.
+
+**Two TL steers I did not follow, with reasons** (both were given before the measurements
+that contradict them existed):
+1. *"Promote PR = 90.8 as the headline."* It is a sample-count artefact of a 150-trial
+   pilot; the same brain reads 977.2 at T=2000. Promoted the **sweep** instead.
+2. *"Say that hand-picking DNa02 by name was not the mistake."* AC2 contradicts it. The dual
+   ridge could not beat the side cue **because the encoder only delivered a side cue** — a
+   fact about the encoder, not the readout. Holding the encoder fixed, the readout choice was
+   worth the whole distance between chance and a 200:1 separation. Picking by name was
+   exactly the mistake, and FINAL says so with the reasoning.
+3. *"Hold AC3 as provisionally-not-supported."* Superseded by evidence requested in the same
+   thread: the fit generalises (cross-seed 0.6453 > holdout 0.6016, shuffled −0.0122) and the
+   encoder fix lifts the ceiling it was judged against. AC3 is specced.
+
+---
+### [2026-09-13 19:05] — qa — #7 (items 1 and 3)
+**Task**: Verify the AC7 battery re-run at `b43fe20` — bit-identical scope-leak check and the H1 framing
+**Result**: PASS (0 new bugs)
+**Issues verified**: #7 (items 1 and 3 PASS; overall partial pass with #47/#48 outstanding)
+**New bugs filed**: none
+**Key findings**:
+- **Item 1 PASS, and settled from the shape rather than the value.** `b43fe20`'s entire executable delta is inside `if state.get("phase") != "playing":`. Instrumenting the real `RewardLoop._detect` over the real trace: **0 of 40,157 replayed states have `phase != "playing"`, and the branch is entered 0 times in 6,729 calls.** Bit-identity is therefore *structurally necessary*, not coincidental.
+- **The caveat that matters more than the result**: because the branch is never entered, **the battery has zero power to detect a defect in this change.** It shows the change is confined, not that it is correct. The four-case counterfactual carries the entire evidential weight — stated sharply on-issue, because a reader skimming the bit-identical table could easily read it as confirmation of the fix.
+- **Counterfactual confirmed and strengthened with a third module.** Pre-fix extracted via `git show b43fe20^:` into scratch (tree never mutated); I added the **rejected `armed = True` variant**. Result: **B moves only against PRE-FIX** (`[]` → 17.95), **C moves only against ARMED-TRUE** (1 → 2 rewards, second at 30.95 — the farmable-by-pausing hack), A and D invariant across all three. So the developer's self-limiting "C is a guard-rail, not a discriminator" is correct **and** C is a live guard-rail rather than dead weight. "Preserving the flag is the only option that does neither" is now verified, not argued.
+- **Item 3 PASS.** Session 5 H1 TRUE (3.87), session 0 H1 FALSE (1.30); null reported alongside, predicted in advance from `tau_decay = 300 s`, the choice explicitly disclosed, and the four band misses named individually rather than rounded. Noted that the trajectory-minimum headline is a post-hoc TL amendment to §9.2, legitimate only because both statistics are reported — and they are.
+- **Battery reproduced independently, per seed**: A 242.30 ± 0.27 / B 242.40 ± 0.22 / C 246.17 ± 0.17, H1 3.87 TRUE, H2 0.10 FALSE, H3 0.07 FALSE — every figure matching. Arm A's `min w/w0` 0.8240 identical across 5 seeds; arm B's varies as it should; **arm C's is 1.0000 on all seeds**, i.e. AC5(a) at the trajectory level.
+- **Caught a dirty file the brief did not flag**: `src/brain/lif.py` was uncommitted. Proved it non-executable — a plain docstring-position AST strip reported a **false difference**, because the changed prose is a PEP-258 **attribute docstring** under `PARTITIONS = 8` (a bare string statement, not body-position). Stripping every string-literal statement gives identical ASTs; `fingerprint --check` passes, pinning the **spike digest**, which is the bit-level proof.
+- **Sharpened #48**: `--contract`'s `PASS ["unknown"] and never [] with no encoder` is **scoped to the no-encoder path** and never builds an Encoder with prosthesis disabled — so the check passes while the invariant in its own name is violated. That is why #48 survived a 12-PASS suite. Posted on #48.
+- Collected set re-run by me: `--session 5` reproduces, `--contract` **12 PASS / 0 FAIL**, `--direction` PASS, `fingerprint --check` ok, full `pytest` **205 passed / 0 skipped**. All files sha256-identical before and after.
+
+**Improvement Insights**:
+- [qa.md]: add — **"a bit-identical result across a change is only evidence if the changed branch is reachable by the test."** Measure branch entry before crediting the reproduction. Here it was 0 of 40,157 states, which makes the table a tautology; the same shape would otherwise read as strong confirmation. This is the mirror of the existing "prove a mutant non-equivalent" rule, applied to a *negative* result rather than a surviving mutant.
+- [qa.md]: add — **"when a developer says a probe is a guard-rail rather than a discriminator, build the variant it guards against."** Case C was correctly self-described but undemonstrated; one extra scratch module turned "C catches the rejected alternative" from an assertion into a measurement (1 → 2 rewards).
+- [CLAUDE.md]: an AST-based "text-only change" check must strip **all** bare string-literal statements, not just docstring-position ones — PEP-258 attribute docstrings under module constants otherwise produce a false positive. `fingerprint --check` is the stronger check where it applies, since it pins the spike digest.
+
+---
+### [2026-09-13 20:10] — developer — #37
+**Task**: `connectome_digest`'s stored-index-order rationale is false; correct it, say whether canonicalising is worth doing, and decide whether the `--no-connectome` seed blind spot belongs in the text
+**Result**: COMPLETED
+**Files changed**: `src/brain/fingerprint.py` (docstrings + one comment, no executable line) — commit `591c14a`, local, not pushed. `SESSION_LOG.md`.
+
+**Key changes**:
+- `fingerprint.py:113` — the false rationale replaced. The digest is **conservative, not tight**: it covers within-column stored order, which on the shipped matrix cannot move the trajectory. Mechanism now stated: CSC canonical form has no duplicate row index in a column, so each accumulator element is written at most once per column and a within-column permutation reorders *which* elements are touched, never the additions into any one. The order that decides the trajectory is *across* columns — the ascending `fired` array and how it is sliced, i.e. `PARTITIONS`, already in `identity`.
+- `fingerprint.py:148` — `identity_only` now says it pins `PARTITIONS` **and every `LIFParams` field** (both read live), and explicitly that it does **not** pin `seed`: the default is this module's own literal and `check_lock` calls it without one, so a change to `FlyBrain`'s default seed passes the constants-only check untouched.
+- `fingerprint.py:166` — the `PARTITIONS`-on-numpy comment cited `fp24.py`, which is in **no commit in this repository**. Claim kept (it is true), citation replaced with #24 plus the checkable fact that `_propagate_numpy` never mentions the constant.
+- `fingerprint.py:6` — module docstring said `PARTITIONS` "is a module constant **nothing records**", in the module that records it. Same present-tense trap as the `lif.py` one fixed in `551ac68`; reworded to the argument the next paragraph actually makes.
+
+**Testing**:
+- **Reproduced the #37 measurement first-hand rather than inheriting it**, in memory, no file touched: reversing row-index order inside every column moves **25,499,848 of 25,582,938** positions and changes the digest (`8b8b7190…` → `4aca8c36…`), while the 60-step spike digest is **bit-identical on both backends** (numba `8735699620ecf1f3`, numpy `f59b047e8c246806`) with `v` equal to the last bit. The numba digest is the one in `trajectory.lock.json` and the numpy one matches QA's independently reported value, so both arms cross-check.
+- Premise verified on the real matrix, not assumed from the CSC contract: `has_sorted_indices` and `has_canonical_format` both `True`, **0** duplicate `(row, col)` entries, within-column indices strictly increasing everywhere.
+- **Canonicalisation recommendation, with the measurement that de-risks it**: `sort_indices()` is a **no-op** on the shipped matrix and leaves the digest unchanged, so it can land without moving the trajectory or touching the lock. Recommended as a **guard, not a transformation** — branch on `has_sorted_indices` and canonicalise into a copy only when `False`; `sort_indices()` mutates in place (the #7 aliasing hazard, `568ae78`) and `sorted_indices()` copies ~200 MB. **Not implemented**, per the TL.
+- **Blind-spot table, every mutation carrying a control that it took effect**: `PARTITIONS` 8→16 **CAUGHT**; `LIFParams.gain` 3.0→3.5 **CAUGHT**; `FlyBrain` default `seed` 64→65 **MISSED**. So the fast half pins `PARTITIONS` and all eight params and not `seed`.
+- **One of my own mutations was vacuous and I caught it before recording it.** `lif.LIFParams.gain = 3.5` on a frozen dataclass does not change what `LIFParams()` builds — the generated `__init__` captured the default at class creation — so it returned a clean `[]` indistinguishable from a real blind spot. Patching `__init__.__defaults__` is the effective form and is caught. Left in the probe as a labelled row.
+- **Tripwire re-verified to still FAIL after editing this module**, per the standing rule: `main(['--check','--no-connectome'])` returns **1** and prints `lock partitions: 8 -> 16` with the `--update` instruction, then 0 restored. Done by patching `PARTITIONS` **in-process** — no file mutated, because `lif.py` is inside the #5+#6 freeze and a staged mutant on a shared tree is the failure mode the restore rule exists for.
+- `--check` full **green** exit 0, `--check --no-connectome` **green** exit 0, `pytest -m "not realdata" -ra` **194 passed, 11 deselected, 0 skipped**. Lock **not** updated and must not be.
+
+**Reported, not fixed**: `lock["connectome"]` is written by `_write_lock` and **never read by `check_lock`** — it diffs `identity` and the spike digest and nothing compares the stored connectome digest. Coverage is not lost (a changed connectome moves the spike digest), so it is redundancy, not a hole — but it is a lock field that looks load-bearing and is not. Touching it means checking or removing it, both lock-schema changes. TL's call.
+
+**Improvement Insights**:
+- [developer.md]: add — **a mutation probe needs a control that the mutation took effect, and the control belongs in the printed output.** My `gain` row printed a clean `[]` on the first attempt and read exactly like a second blind spot; the cause was that patching a frozen dataclass's class attribute does not change what its generated `__init__` builds. Without a `took_effect` column beside the verdict, a reader cannot tell a finding from a no-op — and neither can the author.
+- [developer.md]: add — **when a shared file is frozen, mutate the module in-process instead of on disk.** Patching `lif.PARTITIONS` in the interpreter exercises `check_lock`'s and `main`'s real code path, satisfies the "verify the tripwire still fails" rule, and cannot leave a mutant staged if the process dies mid-run. It should be the default technique, not the workaround.
+- [workflow]: **a defect report's measurement is worth reproducing when reproducing it is cheap.** #37's numbers were right to the digit, but re-running them took two minutes and turned an inherited claim in a docstring into a first-hand one — and it produced the `has_canonical_format` fact that changed the recommendation from "would move the digest, needs its own gate" to "is a no-op today, can land without touching the lock". That fact was not in the report.
+- [criteria.md]: consider a row for **citations that cannot be followed**. `fp24.py` is referenced in a comment justifying a live behaviour and exists in no commit; nothing in the current rows scores it, and it is the same trust failure as a false claim — a reader who tries to verify hits a dead end and either re-derives it or accepts it.
+
+---
+### [2026-09-13 19:25] — qa — #47 (fix verification)
+**Task**: Verify the #47 README fix (`773eb39`) — I filed the bug, so I checked the fix rather than assuming it
+**Result**: PASS with 1 minor sourcing error (0 new issues filed; reported on #47)
+**Issues verified**: #47 (fix is real; honesty defect resolved)
+**New bugs filed**: none — one-digit correction reported on #47, not reopened
+**Key findings**:
+- The fix replaced six words with **eight new factual claims**, which is where a new error hides. **Seven verified, one quotes a superseded run.**
+- **The one miss**: README says `0 / 40 / 108 / 168 shots per minute` (#25). #25 reports the ladder twice — earlier `0.0 / 39.5 / 108.5 / **168.0**`, later "6.0 — shipped" row `0.0 / **40.0** / 108.5 / **167.0**`. **The README takes `40` from the later run and `168` from the earlier one**; neither ladder is what it prints. Matters only because the section opens "Measured, not asserted. Every figure below is on the linked issue with the command that produced it."
+- **Two claims verified by measurement, not cross-reference**: "about 30% of DNp01's input" → measured 0.2990 / 0.3106, mean 0.3048. "**0.0000** from MBONs" → **stronger than written: no MBON→DNp01 edge exists at all**, so it is structural rather than a rounded small number. Reproduced #7 §3.4's population figure exactly (170 of 1,314 DNs, mean 0.00064, max 0.0705).
+- "Two scalars injected identically into every LC4/LPLC2 neuron" confirmed at `encoder.py:243` (`np.full`), since `loom_L`/`loom_R` are not in `VECTOR_SIGNALS`.
+- #40's 0.671/0.945, #27's 3.767/3.925, #3's 1.000/0.500 all present in their cited issues.
+- **Forbidden words clean**: `reinforc*` zero hits; every remaining hit is a denial or the game's own `score` field. Flagged rather than filed: line 22's "activity … **scores** 1.000 against 0.500 shuffled" uses "scores" as a verb in a document that elsewhere uses `score` for the game score.
+- Removing "(steering, escape, walk)" was right on #40's basis, and wrong in a second way too — *escape* and *walk* named channels the game never read.
+
+**Improvement Insights**:
+- [workflow]: **a fix to an honesty defect deserves its own QA pass, because a rewrite that adds claims adds surface.** #47 went from 6 words to 8 numeric claims; deleting the bad sentence was never going to be the risky part. The one miss was a number mixed from two runs of the same issue — invisible to any word sweep, visible only by opening the citation.
+- [qa.md]: add — **when a document cites an issue for a figure, open the issue and check which run the figure came from.** An issue that reports the same measurement twice (before and after a fix) is a provenance trap: both numbers are real, both are "on the linked issue", and only one is current.
+
+**Last open question closed by running it rather than delegating it — and it REVERSED the
+recommendation.** FINAL had left one variant unmeasured (a side-constrained *anatomical*
+column map) with a decision rule fixed in advance. Running it changed the answer:
+
+| encoder arm | full-field DN R² | within-hemifield DN R² |
+|---|---|---|
+| shipped (2 scalars) | 0.7018 | **−0.0061 (chance)** |
+| shipped + PFL3 prosthesis | 0.7734 | 0.1088 |
+| side-aware **random** code | 0.7459 | 0.1489 |
+| **side-aware ANATOMICAL code (now recommended)** | **0.7724** | **0.3700** |
+
+- Anatomical beats random **2.49x** within a hemifield and wins the full field too, and
+  **0.7724 exceeds the 0.7500 side-only ceiling** — arithmetic proof it resolves position
+  *within* a hemifield, not just which side.
+- It **matches the prosthesis** on the full field (0.7724 vs 0.7734) with **3.4x** its
+  within-hemifield resolution (0.3700 vs 0.1088), and bypasses nothing.
+- **This reverses what the unsided arms implied** (unsided random 0.4163 beat unsided
+  anatomical 0.2612). Unsided, both maps scatter the two eyes across overlapping columns and
+  destroy the side cue either way — that comparison was measuring how each map happened to
+  mix the eyes. Factor side out, use only the **within-side ordering**, and anatomy wins.
+- **The anatomical ORDER is load-bearing; the absolute hex value is discarded.** Exactly what
+  the validation predicted: the vote's ordering is informative while its soma-X correlation
+  is weak (+0.13…+0.21) and wrong-signed on the right eye. The claim is "the connectome's
+  ordering of LC4/LPLC2 along azimuth carries the signal", not "calibrated retinotopy".
+- Added as criterion **R-new**: `--sided-map anat` must beat `--sided-map rand` on
+  within-hemifield R² by >= 2.0x. Measured 2.49x. It is the criterion that decides whether
+  the README may claim the connectome's organisation does work.
+
+**Also run, having been prescribed**: the R5 grep (`grep -n 'W\.data' src/brain/decoder.py`)
+returns **zero matches** today, which is what makes R5 a meaningful regression test rather
+than a restatement.
+
+**FINAL now carries an explicit supersession table** naming the three provisional conclusions
+from earlier comments that are now wrong (AC3 provisionally-unsupported; "stranded, not
+absent"; PR = 90.8) with the evidence that changed each. A reader of any single comment in
+the thread could not otherwise tell which conclusions still stood.

@@ -1,15 +1,16 @@
 # Backlog
 
-The backlog is the starting point for all work. The user adds items here, and the TL picks them up, creates GitHub issues with acceptance criteria, and runs them through the pipeline.
+**Intake inbox only.** This file is where the user drops future work items. It is NOT the source of truth for task state — **GitHub issues on `UriZ/Flugspiel` are.**
 
 ## How it works
 
 1. **User adds items** to this file — features, bugs, ideas, improvements
-2. **TL reads the backlog** at the start of each session
-3. **TL prioritizes** — picks the next item(s) to work on based on priority and dependencies
-4. **TL creates GitHub issues** — with acceptance criteria, labels, and assigns to architect
-5. **Item moves through pipeline** — architect → judge → developer → judge → QA → judge → done
-6. **TL updates backlog** — marks items as done, adds new items discovered during work
+2. **TL drains the inbox** — reads new items, creates GitHub issues with acceptance criteria and labels
+3. **Once an issue exists, the issue is authoritative.** The backlog entry is dead text — its status, acceptance criteria, and priority are superseded by the issue. Do not re-read it for state.
+4. **Nobody updates status here.** Don't mark items done, don't maintain `**Status:**`. Ask GitHub instead: `gh issue list`.
+5. **Work discovered mid-pipeline becomes an issue directly** — it does not get written back to the backlog.
+
+Anything below that already has an issue is kept only as the original user-authored intake text. Treat the issue as correct where they disagree.
 
 ## Format
 
@@ -24,7 +25,6 @@ The backlog is the starting point for all work. The user adds items here, and th
 - [ ] [What must be true when this is done]
 
 **Notes:** [optional context, constraints, references]
-**Status:** new / in-progress (#issue) / done (#issue)
 ```
 
 ---
@@ -32,7 +32,7 @@ The backlog is the starting point for all work. The user adds items here, and th
 ## Priority: High
 
 ### Connectome loader + LIF brain engine
-Download MaleCNS v1.0 data from Janelia, build the signed weight matrix (166,700 neurons, 25.6M synapses), and implement the leaky integrate-and-fire simulation step. Reference fly.ai's `build_brain.py` and LIF model.
+Download MaleCNS v1.0 data from Janelia, build the signed weight matrix (166,700 neurons, 25.6M connections / 124M synapses), and implement the leaky integrate-and-fire simulation step. Reference fly.ai's `build_brain.py` and LIF model.
 
 **Acceptance criteria:**
 - [ ] Downloads connectome data (~1.1 GB) from public Janelia sources
@@ -43,7 +43,6 @@ Download MaleCNS v1.0 data from Janelia, build the signed weight matrix (166,700
 - [ ] Unit tests for LIF dynamics (single neuron, small network)
 
 **Notes:** Reference https://github.com/alextitonis/fly.ai for data sources and LIF implementation. Data under CC-BY 4.0.
-**Status:** new
 
 ### Game state API for Missile Attack
 Fork/integrate UriZ/missile-attack-aracde-web and add a programmatic interface: `getState()` returns game state as JSON, `applyAction(action)` applies fly-brain decisions. Game must still be playable by a human.
@@ -57,7 +56,6 @@ Fork/integrate UriZ/missile-attack-aracde-web and add a programmatic interface: 
 - [ ] No changes to core game mechanics
 
 **Notes:** Source: https://github.com/UriZ/missile-attack-aracde-web. Vanilla JS, Canvas 2D, zero deps.
-**Status:** new
 
 ### Encoder + Decoder
 Map game state onto the fly's sensory neurons (encoder) and map descending neuron activity to game actions (decoder). This is the core integration layer.
@@ -71,7 +69,6 @@ Map game state onto the fly's sensory neurons (encoder) and map descending neuro
 - [ ] Unit tests for encoding roundtrip and decoder output ranges
 
 **Notes:** Reference fly.ai's visual input system and motor output mapping.
-**Status:** new
 
 ### WebSocket server + bridge
 FastAPI WebSocket server that receives game state, runs one brain step, returns actions + neuron snapshot for visualization.
@@ -85,7 +82,6 @@ FastAPI WebSocket server that receives game state, runs one brain step, returns 
 - [ ] Integration test: send mock game state, receive valid action
 
 **Notes:** FastAPI + uvicorn. JSON messages.
-**Status:** new
 
 ## Priority: Medium
 
@@ -100,7 +96,6 @@ HTML layout with left panel (brain viz) and right panel (game canvas). Shared st
 - [ ] Both panels render at 30+ fps
 
 **Notes:** Vanilla HTML/CSS/JS. No frameworks.
-**Status:** new
 
 ### Brain visualization panel
 Real-time visualization of neuron activity: region-colored neuron map, spike raster, descending neuron indicators, reward history.
@@ -114,7 +109,6 @@ Real-time visualization of neuron activity: region-colored neuron map, spike ras
 - [ ] Renders at 30+ fps with full 166k neuron data
 
 **Notes:** Canvas 2D or WebGL. Reference snedea/flybrain for browser-based neural viz approach.
-**Status:** new
 
 ### Dopamine reward loop
 Implement reinforcement via the fly's biological dopamine pathway: PAM neurons for reward (missile intercepted), PPL neurons for punishment (base hit). Modulates KC→MBON synaptic weights.
@@ -128,7 +122,6 @@ Implement reinforcement via the fly's biological dopamine pathway: PAM neurons f
 - [ ] Unit test: verify weight modulation direction (reward strengthens, punishment weakens)
 
 **Notes:** Reference stonkfly's dopamine implementation. Note their disclaimer: weight changes don't guarantee learning.
-**Status:** new
 
 ## Priority: Low
 
@@ -141,10 +134,7 @@ Support connecting the fly brain to other simple arcade games beyond Missile Att
 - [ ] Game selector in UI
 
 **Notes:** Stretch goal. Encoder/decoder design should anticipate this from the start.
-**Status:** new
 
 ---
 
-## Done
-
-<!-- TL moves completed items here with issue references -->
+<!-- No "Done" section: completion lives in GitHub issues, not here. -->
