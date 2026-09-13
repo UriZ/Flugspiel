@@ -10,8 +10,34 @@ Split-panel UI: watch the brain fire on the left while the fly plays [Missile At
 
 1. **Game state** (missile positions, base health, score) is encoded into the fly's sensory neurons
 2. **166,700 LIF neurons** propagate signals through the real connectome wiring
-3. **Descending neurons** (steering, escape, walk) are decoded into game actions (aim, fire, switch weapon)
-4. **Dopamine reward loop** reinforces successful interceptions
+3. **Descending neurons** are decoded into game actions
+4. **Dopamine reward loop** modulates KC->MBON synaptic efficacy
+
+## What actually works, and what does not
+
+Measured, not asserted. Every figure below is on the linked issue with the command that produced it.
+
+**Firing is real.** LC4 and LPLC2 — the fly's genuine looming detectors — supply about 30% of DNp01's
+input, and driving them produces a monotone response: **0 / 40 / 108 / 168 shots per minute** as threat
+rises (#25). A shuffle control separates this from noise: activity under real game state scores
+**1.000** against **0.500** shuffled (#3, AC7).
+
+**Aiming is a prosthesis, and we caused that.** The shipped encoder gives the only descending-reaching
+visual channel **two scalars**, one per side, injected identically into every LC4/LPLC2 neuron — so
+azimuth is destroyed before the brain sees it. Aim error is **0.671 of shuffled** with the injected
+assist and **0.945 — chance — without it**. A retinotopic injection recovers real within-hemifield
+azimuth where the shipped encoder sits at chance (#40). The assist is flagged `prosthesis: true` on the
+wire and disclosed in every frame.
+
+**The weapon channel is disabled.** Its resting noise peaks at 3.767 Hz and its maximum under full
+threat is 3.925 Hz — the same distribution. No threshold separates them, so it ships off rather than
+pretending (#27).
+
+**The reward loop does not change gameplay, and is not learning.** It measurably modulates KC->MBON
+efficacy and mushroom-body output, and **that modulation does not reach the game's readout neurons** —
+DNp01 receives **0.0000** of its input from MBONs. #7 pre-registers three hypotheses; the one asking
+whether anything reaches the game came out **FALSE**, as predicted. Nothing here is training,
+learning, or improvement, and the code is forbidden from saying otherwise.
 
 ## Quick Start
 
