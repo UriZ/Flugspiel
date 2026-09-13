@@ -16,6 +16,7 @@
 // contract: it is the one place these buffers are allocated.
 
 import { DECAY_LUT, FLOOR_LUT, GROUND32, RAMP_LUT } from './palette.js';
+import { spikeAt } from '../ui/spike-codec.js';
 
 /** Fraction of a pixel's population that counts as full brightness. A single-neuron
  *  pixel is then binary, which is correct — it *is* one neuron — while dense pixels
@@ -113,7 +114,7 @@ export function createAccumulator() {
       lit.fill(0);
       for (let j = 0; j < member.length; j++) {
         const i = member[j];
-        if ((bytes[i >> 3] >> (7 - (i & 7))) & 1) lit[memberPx[j]]++;
+        if (spikeAt(bytes, i)) lit[memberPx[j]]++;
       }
       for (let k = 0; k < occupied.length; k++) {
         const p = occupied[k];
