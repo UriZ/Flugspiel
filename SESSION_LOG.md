@@ -2278,3 +2278,27 @@ Commands: `PYTHONPATH=. python tools/spike/reward-substrate.py` (seconds, determ
 - [developer.md]: add — **report the path you expected and disproved, not only the one you found.** I predicted `observe(dt=1e-300)` would overflow the rates; the EMA's `a` factor cancels it exactly. Saying so stops the next agent re-deriving it, and it is the same rule CLAUDE.md already applies to negative results.
 - [qa.md]: add — **a stale-comment issue should be re-grepped tree-wide, and correct occurrences listed alongside the stale ones.** #33 reported three; the tree has four, and the fourth is right. Without naming it, the next pass "fixes" a true sentence — and the count changing from 3 to 4 looks like a regression rather than a more careful search.
 - [CLAUDE.md]: consider adding to the guard-writing rule — **`np.clip` is a range limiter, never a sanitiser.** It bounds `±inf` and passes NaN through, so `clip` upstream of a write reads as protection and is not. The correct order is `nan_to_num` then `clip`, which `encoder.py:253-254` already does and is the pattern to copy.
+
+---
+### [2026-09-13 14:40] — developer — #7
+**Task**: Implement the TL's reversal of the §4.2/§4.3 arming ruling and re-run the AC7 battery on both sessions
+**Result**: COMPLETED
+**Files changed**: src/brain/reward.py, tools/spike/reward-shuffle.py, SESSION_LOG.md
+**Commits (local, not pushed)**: `8442d6c`
+**Key changes**:
+- src/brain/reward.py `_resync` — the survival timer now arms at session start as well as after each punishment, with `armed_at` set to the resync time so time spent outside `playing` still counts for nothing. Docstring records that §4.2 supersedes §4.3 step 3 **by TL decision reversing an earlier ruling**, with the measurement as the reason
+- tools/spike/reward-shuffle.py — `--trajectory` now prints both compartments, since the reward compartment is the half the change is visible in
+
+**Testing** (2026-09-13, real connectome, numba, HEAD `8442d6c`):
+- **A prediction registered with the TL before the battery finished**: arms A and C, H1, H2, H3 and AC3(iii) should return *bit-identical*, because reward events write only to the PAM11 compartment while H1's observable sits in the PPL101 one; a move would be a scope leak and a bug, not a result. **Held on both sessions, per seed.** Session 5 arm A 242.30±0.27 and arm C 246.17±0.17, H1 3.87 TRUE; session 0 arm A 244.67±0.72 and arm C 245.97±0.41, H1 1.30 FALSE; `min w/w0` 0.8240 and 0.8261. Every figure matches the pre-change run
+- Arm B moved and should have — its train gained an event (8→9 and 9→10), so the interval permutation is over a different set. Session 5 H2 0.40→0.10, session 0 H2 0.10→0.27. **H2 stays FALSE**, which is the prediction that must not flip
+- `--trajectory` across all 10 sessions: exactly +1 reward each, punishment counts unchanged, punish column identical to four decimals, reward compartment potentiating to 1.057–1.112 where it was previously pinned at 1.0000
+- `pytest -m "not realdata"` → **194 passed, 11 deselected, 0 skipped**; `--contract` → **12 PASS, 0 FAIL**; `--direction` → PASS
+- The cap reverts to **≤ 8 rewards against exactly 7 punishments**; the correction table in my previous issue comment is withdrawn
+
+**Flagged, not fixed**: the phase gate (§4.3 step 1) disarms directly rather than through `_resync`, so a pause or gameover blip *within* the same session still leaves the timer disarmed until the next punishment — the narrow version of the problem this reversal fixed. A real restart carries a new `session` and does hit `_resync`, so exposure is small. Raised with the TL; beyond what was decided.
+
+**Improvement Insights**:
+- [developer.md]: add — **when a change should provably NOT move a measurement, say so before re-running it.** Predicting that arms A and C would return bit-identical turned a re-measurement into an independent check of the scope claim at the rate level, which `--contract` only checks at the weight level. A prediction registered afterwards proves nothing; the same numbers, registered first, proved compartment independence.
+- [tl.md]: add — **when a ruling is reversed, the developer should publish the withdrawal of anything derived from the old one.** I had published a correction table telling a judge to read "≤ 8" as "≤ 7" throughout §4.2, §4.4 and R4. That table outlived its ruling by one comment and would have misled the judge worse than the original inconsistency.
+- [workflow]: five green lights for one three-line edit all crossed with my own messages, and the file had been free the whole time. The gate should key on the owning agent's *completion*, not on a round trip that races the thing it is gating.
