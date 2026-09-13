@@ -29,6 +29,8 @@
     "types": ["DNa02"], "tau": 0.5, "dead": 0.15, "k_turn": 1.0,
     "zero": null, "invert": false, "y_policy": "threat", "y_default": 0.35
   },
-  "fire": { "types": ["DNp01"], "tau": 0.25, "on_hz": 3.0, "off_hz": 1.0 },
-  "weapon": { "types": ["DNg100", "MDN"], "tau": 0.50, "on_hz": 2.0, "off_hz": 0.5 }
+  "fire": { "types": ["DNp01"], "tau": 0.25, "on_hz": 4.0, "off_hz": 1.0,
+            "spikes_per_action": 6.0 },
+  "weapon": { "types": ["DNg100", "MDN"], "tau": 0.50, "on_hz": 2.0, "off_hz": 0.5,
+              "spikes_per_action": null }
 }

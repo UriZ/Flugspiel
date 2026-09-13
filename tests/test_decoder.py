@@ -115,7 +115,7 @@ def test_crosshair_bounded(dec):
 def test_dead_zone_exact(dec):
     dead = dec.mapping.aim["dead"]
     for index in (0.0, dead * 0.5, dead, -dead):
-        dec.reset()
+        dec.reset(readout=True)
         dec.aim_zero = 0.0
         dec.rates["aim_L"] = (1 + index) * 10
         dec.rates["aim_R"] = (1 - index) * 10
@@ -142,7 +142,7 @@ def test_aim_sign_convention(dec):
     assert dec._index() > 0
     assert dec.decode(state(), 0.1)["x"] > 0.5
 
-    dec.reset()
+    dec.reset(readout=True)
     dec.aim_zero = 0.0
     drive(dec, steps=100, cells=right)
     assert dec._index() < 0
@@ -181,15 +181,25 @@ def test_fire_schmitt(dec):
     assert fires == [False, False, True, False, False, False, False, False, True]
 
 
-def test_fire_edge_from_spike_train(dec):
-    """Spike level: a continuous DNp01 burst is one fire, not one per decode tick."""
+def test_fire_sustains_under_a_held_burst(dec):
+    """Spike level: a held DNp01 burst keeps firing, and stops once the EMA decays (#25).
+
+    This pinned the opposite before #25 — one fire per *excursion*, whatever the burst
+    did after the edge. Real looming holds DNp01 above `off_hz` for the whole approach,
+    so that rule went silent exactly when a missile was about to land.
+    """
     p01 = dec.brain.cells(["DNp01"])
-    actions = []
-    for burst in (p01, np.empty(0, np.int64), p01):
+    burst, tail = 0, 0
+    for cells in (p01, np.empty(0, np.int64)):
         for _ in range(40):
-            drive(dec, steps=5, cells=burst)
-            actions.append(dec.decode(state(), 5 * DT)["action"])
-    assert actions.count("fire") == 2, actions
+            drive(dec, steps=5, cells=cells)
+            fired = dec.decode(state(), 5 * DT)["action"] == "fire"
+            if len(cells):
+                burst += fired
+            else:
+                tail += fired
+    assert burst > 20, burst
+    assert tail <= 5, "the EMA decays through the band and then the channel goes quiet"
 
 
 def test_reject_does_not_consume_fire(dec):
@@ -293,20 +303,25 @@ def test_silence_gives_noop(dec):
 
 
 def test_decode_rate_independent_of_step_rate(dec):
-    """One action per decode(), whatever the observe():decode() ratio (D12)."""
-    p01 = dec.brain.cells(["DNp01"])
+    """D12 — actions per second of *brain* time, not per decode tick.
+
+    One DNp01 neuron, not both: a channel is capped at one action per `decode()` call, so
+    two neurons saturate that ceiling at the coarser ratio and the comparison stops being
+    about the ratio at all. The same run length in brain time on both sides.
+    """
+    one = dec.brain.cells(["DNp01"])[:1]
     counts = []
     for per_tick in (1, 5):
-        dec.reset()
+        dec.reset(readout=True)
         dec.aim_zero = 0.0
         fires = 0
-        for _ in range(50):
-            drive(dec, steps=per_tick, cells=p01)
+        for _ in range(250 // per_tick):
+            drive(dec, steps=per_tick, cells=one)
             msg = dec.decode(state(), per_tick * DT)
             assert_bridge_accepts(msg)
             fires += msg["action"] == "fire"
         counts.append(fires)
-    assert counts == [1, 1], counts
+    assert abs(counts[0] - counts[1]) <= 2, counts
 
 
 # --------------------------------------------------------------------------- D13

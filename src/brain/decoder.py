@@ -250,14 +250,16 @@ class Decoder:
             return rising
         if not hot:
             self._charge[key] = 0.0
-        elif rising:
-            self._charge[key] = per  # the edge itself buys the first action
-        else:
-            self._charge[key] = min(per, self._charge[key]
-                                    + (self.rates[key] - channel.off_hz) * dt)
+            return False
+        self._charge[key] = per if rising else \
+            self._charge[key] + (self.rates[key] - channel.off_hz) * dt
         if self._charge[key] < per:
             return False
-        self._charge[key] = 0.0
+        # Carry the remainder rather than zeroing, so the action rate follows brain time
+        # and not the decode rate: one coarse tick can deliver several actions' worth of
+        # charge, and dropping it would make a slow decoder fire less per second than a
+        # fast one off the same train. Capped at one spare so a transient leaves no queue.
+        self._charge[key] = min(self._charge[key] - per, per)
         return True
 
     def _advance_weapon(self, state: dict) -> int | None:
