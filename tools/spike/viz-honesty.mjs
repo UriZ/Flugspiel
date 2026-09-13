@@ -20,6 +20,7 @@
 // Exit 0 always — this is a measurement, not a gate.
 
 import http from 'node:http';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,6 +33,9 @@ const puppeteer = require_('puppeteer');
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf(`--${k}`); return i === -1 ? d : argv[i + 1]; };
 const POISON_KEY = arg('poison', 'off');
+// `--legacy` serves `git show HEAD:` for the module under test, so the before/after of a
+// disclosure change needs no edit on disk.
+const LEGACY = argv.includes('--legacy');
 // Two forbidden words at once, so a regex that lost one alternative still fails the run.
 const POISON_TEXT = 'Reward loop disabled — training improves the fly.';
 
@@ -81,9 +85,12 @@ if (!CAPTION_RE.test(dopamineSrc)) {
 const server = http.createServer(async (req, res) => {
   const p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   if (p === '/__honesty.html') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(FIXTURE); }
-  if (p === '/src/viz/dopamine.js' && poisoned) {
+  if (p === '/src/viz/dopamine.js' && (poisoned || LEGACY)) {
     res.writeHead(200, { 'content-type': 'text/javascript' });
-    return res.end(dopamineSrc.replace(CAPTION_RE, `$1'${POISON_TEXT}'`));
+    const src = LEGACY
+      ? execFileSync('git', ['show', 'HEAD:src/viz/dopamine.js'], { cwd: ROOT, encoding: 'utf8' })
+      : dopamineSrc;
+    return res.end(poisoned ? src.replace(CAPTION_RE, `$1'${POISON_TEXT}'`) : src);
   }
   try {
     const f = path.join(ROOT, p);
@@ -102,8 +109,19 @@ const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
 const REWARDS = {
   unimplemented: { value: 0, source: 'unimplemented', session_changed: false },
   off: { enabled: false, value: 0, cumulative: 0, source: 'disabled', session_changed: false,
-         events: { reward: 0, punish: 0 }, prosthetic_sites: [] },
+         events: { reward: 0, punish: 0 }, prosthetic_sites: ['none'], coded_sites: ['none'] },
 };
+
+/** #48 — the disclosure states the reward loop can emit, and what the panel says about
+ *  each. The two sentinels are the point: `[]` cannot come from a conforming producer,
+ *  so it stays a fault, while `["none"]` and `["unknown"]` are states. */
+const DISCLOSURES = [
+  ['shipped (no prosthesis, coded input)', { prosthetic_sites: ['none'], coded_sites: ['looming_code'] }],
+  ['prosthesis re-enabled', { prosthetic_sites: ['aim_bias_L', 'aim_bias_R'], coded_sites: ['looming_code'] }],
+  ['no encoder supplied', { prosthetic_sites: ['unknown'], coded_sites: ['unknown'] }],
+  ['non-conforming producer', { prosthetic_sites: [], coded_sites: [] }],
+  ['field absent entirely', {}],
+];
 
 async function arm(label) {
   const page = await browser.newPage();
@@ -131,6 +149,27 @@ async function arm(label) {
     console.log(`[${label}] state=${state.padEnd(14)} caption=${cap ? `"${cap.text}" ${cap.fill}` : '(none drawn)'}`);
   }
   return { errors, out };
+}
+
+if (argv.includes('--disclosure')) {
+  const page = await browser.newPage();
+  await page.setViewport({ width: 960, height: 900, deviceScaleFactor: 1 });
+  await page.goto(`${base}/__honesty.html`, { waitUntil: 'networkidle0' });
+  await page.waitForFunction('window.__ready', { timeout: 20000 });
+  for (const [label, disc] of DISCLOSURES) {
+    const reward = { enabled: true, value: 0.2, cumulative: 1.0, source: 'reward',
+                     session_changed: false, events: { reward: 1, punish: 0 },
+                     dopamine: { PAM11: 0.4, PPL101: 0.1 },
+                     compartments: { reward: 1.01, punish: 0.98 }, ...disc };
+    const texts = await page.evaluate((r) => window.__texts(r), reward);
+    const lines = texts.filter((t) => /^(prosthesis|coded input)[: ]/.test(t.t));
+    console.log(`${label}`);
+    for (const l of lines) console.log(`    ${l.fill}  ${l.t}`);
+    if (!lines.length) console.log('    (nothing drawn)');
+  }
+  await browser.close();
+  server.close();
+  process.exit(0);
 }
 
 console.log(`poisoning CAPTION.${POISON_KEY} with "${POISON_TEXT}" · `

@@ -61,6 +61,26 @@ if (withheld.length) {
     + 'and were withheld — see FORBIDDEN in src/viz/dopamine.js');
 }
 
+/** One disclosed site list from the reward block → what to say and in what colour.
+ *
+ *  Five claims, five renderings, because they are five different statements about the
+ *  world and the words are what truncate first.
+ *
+ *  `#7` emits `["none"]` and `["unknown"]` rather than `[]` so that a list read on its
+ *  own — in a log, a screenshot, a grep — still says which one it is (#48). Those two
+ *  sentinels are not site names and must not be rendered as if they were: magenta is
+ *  reserved for a prosthesis that is actually there, and neither of the states that say
+ *  there is none may spend it.
+ *
+ *  `[]` is kept as a fault, and it is still a real check — it now means a producer that
+ *  does not implement that contract, rather than a configuration. */
+const disclosed = (list, label, present) =>
+  (!Array.isArray(list) ? [`${label}: not reported`, C.warn]
+    : list.length === 0 ? [`${label}: EMPTY LIST — disclosure missing (bug)`, C.bad]
+    : list.length === 1 && list[0] === 'unknown' ? [`${label}: not disclosed`, C.warn]
+    : list.length === 1 && list[0] === 'none' ? [`${label}: none enabled`, C.key]
+    : [`${label}: ${list.join(' ')}`, present]);
+
 const DEFAULT_POINTS = 600;
 
 export function createDopamine() {
@@ -267,29 +287,29 @@ export function createDopamine() {
       // #7 puts the disclosure INSIDE the reward object so a logged `value` can never
       // be separated from it; prefer that over `ready`, which is only the fallback for
       // a frame that predates the loop.
-      const inner = last?.prosthetic_sites;
-      const sites = Array.isArray(inner) ? inner : Array.isArray(prostheticSites) ? prostheticSites : null;
+      //
+      // TWO disclosures, because since #40 the live one is the second. No prosthesis is
+      // enabled in the shipped mapping, and a viewer told only that would conclude the
+      // encoding was the fly's own — which it is not. `coded_sites` names the inputs
+      // whose spatial basis is ours.
       ctx.font = FONT(9);
-      // #7 returns ["unknown"], never []. An empty INNER list would read as "no
-      // prosthesis", which is a false statement rather than a missing one — so it is
-      // surfaced as the fault it is instead of being rendered as clean.
-      //
-      // The rule is about the inner field only. `ready.prosthetic_sites` is the enabled
-      // sites with a prosthesis, and `[]` there is the honest answer when none is
-      // enabled — that is the control condition working, and flagging it red would
-      // render the honest configuration as a fault.
-      //
-      // Four different claims, so four different colours. The words differ too, but the
-      // words are what truncate first. `none enabled` states a fact about the
-      // configuration; `not reported` says no field arrived; those are not the same and
-      // must not look it. Magenta is reserved for a prosthesis that is actually there,
-      // so neither of the two states that say there is none may spend it.
-      const broken = Array.isArray(inner) && inner.length === 0;
-      const [text, colour] = broken
-        ? ['prosthesis: EMPTY LIST — disclosure missing (bug)', C.bad]
-        : sites === null ? ['prosthesis: not reported', C.warn]
-        : sites.length === 0 ? ['prosthesis: none enabled', C.key]
-        : [`prosthesis: ${sites.join(' ')}`, C.prosthetic];
+      const inner = last?.prosthetic_sites;
+      y = this._disclosure(ctx, x, y,
+        Array.isArray(inner)
+          ? disclosed(inner, 'prosthesis', C.prosthetic)
+          // The `ready` fallback is a RAW config list and obeys a different rule: `[]`
+          // there is the honest answer when no prosthesis site is enabled, and flagging
+          // it would render the control condition as a fault (#45).
+          : !Array.isArray(prostheticSites) ? ['prosthesis: not reported', C.warn]
+          : prostheticSites.length === 0 ? ['prosthesis: none enabled', C.key]
+          : [`prosthesis: ${prostheticSites.join(' ')}`, C.prosthetic]);
+      this._disclosure(ctx, x, y, disclosed(last?.coded_sites, 'coded input', C.text));
+    },
+
+    /** One wrapped disclosure line, returning the next free y. Both fit: `_renderBars`
+     *  only runs in `full` mode, where the zone's height is fixed by the ladder, and
+     *  the longest pair of claims here is three wrapped lines. */
+    _disclosure(ctx, x, y, [text, colour]) {
       ctx.fillStyle = colour;
       const words = text.split(' ');
       let line = '';
@@ -301,7 +321,8 @@ export function createDopamine() {
         }
         line += `${w} `;
       }
-      if (line.trim()) ctx.fillText(line.trim(), x, y);
+      if (line.trim()) { ctx.fillText(line.trim(), x, y); y += 11; }
+      return y;
     },
 
     _renderTrace(ctx, x, y, w, h) {

@@ -190,6 +190,29 @@ class RewardEvent:
 
 NO_EVENT = RewardEvent(NONE, 0.0, 0.0)
 
+DISCLOSED_NONE = "none"
+DISCLOSED_UNKNOWN = "unknown"
+
+
+def _disclose(names: Sequence[str] | None) -> list[str]:
+    """A site list that still says what it means when read on its own.
+
+    Three states, not two: the site names, `["none"]` for *known to be none*, and
+    `["unknown"]` for *nobody could say*. **`[]` is deliberately unrepresentable.** #7 §8
+    requires the disclosure to survive being read apart from the number it describes — in
+    a log line, a screenshot, a grep — and a bare `[]` reads as "nothing was assisting"
+    whether it means that or means nobody was asked. Those are different claims and the
+    honest one is worth a word.
+
+    The sentinels sit *inside* the list rather than in a flag beside it for the same
+    reason: a neighbouring field does not travel with a grepped line. That is the one
+    argument for overloading a value space, and `Mapping` pays for it by rejecting a site
+    called `none` or `unknown`, so a sentinel can never be mistaken for a name.
+    """
+    if names is None:
+        return [DISCLOSED_UNKNOWN]
+    return list(names) if names else [DISCLOSED_NONE]
+
 
 class RewardLoop:
     """Holds no clock and no socket: #4 calls `observe()` once per brain step and
@@ -200,10 +223,22 @@ class RewardLoop:
         self.brain = brain
         self.cfg = cfg or RewardConfig.default()
         # Never re-derived from the mapping: a disclosure that can disagree with the
-        # encoder it describes is worse than none (#7 §8). `["unknown"]` and never `[]`,
-        # because an empty list reads as "no prosthesis was active".
-        self.prosthetic_sites = list(encoder.prosthetic_sites) if encoder is not None \
-            else ["unknown"]
+        # encoder it describes is worse than none (#7 §8). See `_disclose` for why
+        # neither of these can be `[]`.
+        #
+        # Two fields because there are two different things to disclose, and since #40
+        # the second one is the live one:
+        #
+        #   prosthetic_sites  a shortcut PAST the fly's circuitry. None are enabled in
+        #                     the shipped mapping any more, and that is a result rather
+        #                     than an oversight.
+        #   coded_sites       an input whose spatial basis is OURS rather than the fly's.
+        #                     The brain still does the work, but a reader told only that
+        #                     no prosthesis is active would conclude the encoding was the
+        #                     fly's own, which is false in a way the first field cannot
+        #                     express.
+        self.prosthetic_sites = _disclose(None if encoder is None else encoder.prosthetic_sites)
+        self.coded_sites = _disclose(None if encoder is None else encoder.coded_sites)
 
         # Eager and loud, mirroring `Encoder`/`Decoder`: `brain.cells()` returns an empty
         # array for a type this brain lacks, so a typo would give a permanently dead loop
@@ -460,6 +495,7 @@ class RewardLoop:
             # In the same object as `value` by design: a logged reward number that can be
             # read without its disclosure is the failure #7 §8 exists to prevent.
             "prosthetic_sites": list(self.prosthetic_sites),
+            "coded_sites": list(self.coded_sites),
             "resyncs": self._telemetry["resyncs"],
             "anomalies": self._telemetry["anomalies"],
         }

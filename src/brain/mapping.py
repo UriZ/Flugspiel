@@ -22,6 +22,12 @@ import numpy as np
 
 DEFAULT_MAPPING_PATH = Path(__file__).resolve().parent / "mappings" / "missile_attack.json"
 
+# `reward._disclose` distinguishes "no site" from "nobody could say" with these two
+# words inside the site list, because a sentinel beside the list does not survive being
+# grepped out of a log (#7 §8, #48). That only works while no real site can be called
+# either, so the names are reserved here rather than hoped about there.
+RESERVED_SITE_NAMES = ("none", "unknown")
+
 SIDES = (None, "L", "R", "M")
 GAIN_MODS = (None, "drive")
 Y_POLICIES = ("threat", "fixed")
@@ -291,6 +297,11 @@ def _site(entry: Any, signals: Sequence[str]) -> Site:
     name = entry.get("name")
     if not isinstance(name, str) or not name:
         raise MappingError(f"site name must be a non-empty string, got {name!r}")
+    if name.lower() in RESERVED_SITE_NAMES:
+        raise MappingError(f"site name {name!r} is reserved: the reward loop's disclosure "
+                           f"uses {list(RESERVED_SITE_NAMES)} inside the site list to say "
+                           f"'no sites' and 'not known', and a site by that name would be "
+                           f"indistinguishable from either (#48)")
     _only(entry, SITE_KEYS, f"site {name!r}")
     if entry.get("signal") not in signals:
         raise MappingError(f"site {name!r}: unknown signal {entry.get('signal')!r}; "

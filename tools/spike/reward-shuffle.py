@@ -188,7 +188,7 @@ def _null_brain() -> FlyBrain:
 
 CONTRACT_FIELDS = {"enabled": bool, "value": float, "source": str, "session_changed": bool,
                    "cumulative": float, "events": dict, "dopamine": dict,
-                   "compartments": dict, "prosthetic_sites": list,
+                   "compartments": dict, "prosthetic_sites": list, "coded_sites": list,
                    "resyncs": int, "anomalies": int}
 
 
@@ -213,10 +213,20 @@ def contract(cfg: RewardConfig) -> None:
            if not isinstance(tel.get(k), t)}
     ok(f"every field of §10.1 present with its type ({len(CONTRACT_FIELDS)} fields)",
        not bad, bad)
-    ok("prosthetic_sites == Encoder.prosthetic_sites, element for element",
-       tel["prosthetic_sites"] == enc.prosthetic_sites, tel["prosthetic_sites"])
+    # The contract changed with #48: the loop discloses `["none"]` for a KNOWN absence
+    # rather than the `[]` the encoder itself reports, so that a list read apart from
+    # its number still says which of the two it means. `[]` is now unrepresentable here,
+    # and that is the property worth asserting.
+    ok("prosthetic_sites == Encoder.prosthetic_sites when any are enabled",
+       tel["prosthetic_sites"] == (enc.prosthetic_sites or ["none"]), tel["prosthetic_sites"])
+    ok("coded_sites == Encoder.coded_sites when any are coded",
+       tel["coded_sites"] == (enc.coded_sites or ["none"]), tel["coded_sites"])
     ok('["unknown"] and never [] with no encoder',
-       RewardLoop(brain, cfg).telemetry(False)["prosthetic_sites"] == ["unknown"])
+       RewardLoop(brain, cfg).telemetry(False)["prosthetic_sites"] == ["unknown"]
+       and RewardLoop(brain, cfg).telemetry(False)["coded_sites"] == ["unknown"])
+    ok('neither disclosure can be [] with a real encoder',
+       tel["prosthetic_sites"] != [] and tel["coded_sites"] != [],
+       (tel["prosthetic_sites"], tel["coded_sites"]))
 
     # (a) two events between emitted frames: `value` is their signed sum, not the last.
     for _ in range(WARM):
