@@ -1,0 +1,22 @@
+{
+  "backend": "numba",
+  "connectome": "8b8b7190eef677d4cb5eba6746754edc",
+  "identity": {
+    "backend": "numba",
+    "params": {
+      "dt": 0.02,
+      "gain": 3.0,
+      "noise_amp": 0.22,
+      "noise_hz": 1.2,
+      "tau": 0.1,
+      "threshold": 1.0,
+      "tonic": 0.14,
+      "v_reset": 0.0
+    },
+    "partitions": 8,
+    "seed": 64
+  },
+  "spike_digest": "8735699620ecf1f3",
+  "steps": 60,
+  "version": 1
+}
