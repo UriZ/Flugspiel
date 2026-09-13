@@ -18,8 +18,8 @@ Split-panel UI: watch the brain fire on the left while the fly plays [Missile At
 Measured, not asserted. Every figure below is on the linked issue with the command that produced it.
 
 **Firing is real.** LC4 and LPLC2 — the fly's genuine looming detectors — supply about 30% of DNp01's
-input, and driving them produces a monotone response: **0 / 40 / 108 / 168 shots per minute** as threat
-rises (#25). A shuffle control separates this from noise: activity under real game state scores
+input, and driving them produces a monotone response: **0 / 40 / 108.5 / 167 shots per minute** as threat
+rises (#25). A shuffle control separates this from noise: activity under real game state reads
 **1.000** against **0.500** shuffled (#3, AC7).
 
 **Aiming is a prosthesis, and we caused that.** The shipped encoder gives the only descending-reaching
