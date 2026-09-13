@@ -106,6 +106,34 @@ skimming a bit-identical table will read it as confirmation, which is the opposi
 **Instrument the branch and report the entry count**, then say which artefact actually carries the
 evidential weight. Here it was a four-case counterfactual against the pre-fix module, not the battery.
 
+## Before judging a result against a threshold, measure the metric's CEILING in that harness
+
+Build an **oracle** — perfect noiseless access to the signal, driven through the *shipped* servo and
+scored by the *same* metric — and see what it gets. If the oracle cannot pass the threshold, **the
+threshold is a statement about the harness, not about the work.**
+
+This settled #40's R8. In the synthetic three-missile sky, a centroid oracle scores **0.619** and a
+fully-supervised linear-of-profile ridge scores **0.591**, both **above** the ≤ 0.55 bar — while the
+shipped readout measured **0.652**, within 0.03-0.06 of perfect information. The criterion was
+unsatisfiable by construction in the harness it was measured in, and no amount of implementation
+quality could have reached it.
+
+**Report more than one oracle where they differ in kind, and claim neither as *the* ceiling.** A
+centroid normalises by total signal mass and a linear map cannot, so they bound the answer from
+different directions.
+
+## A harness can be unrepresentative in BOTH directions at once
+
+Do not assume a synthetic scene is a conservative approximation of the real one. Measured on the
+identical metric: the real game has **no argmax contender at all 48.8% of the time** and **>= 2 only
+15.6%**, while the synthetic sky has >= 2 **88.3%** of the time and never an empty sky. **It was harder
+than reality, not a safe simplification** — and the single-target alternative was easier in a different
+way, never having clutter *or* an empty sky.
+
+**And check what the metric actually consumes, not the raw count.** Raw concurrency averaged 3.04, but
+most of those entities are not closing, so they inject nothing: on loom >= 0.05 the mean is 1.17. The
+number that matters is the one the readout must discriminate.
+
 ## An ABSENCE-of-effect result needs a positive control in the same harness
 
 Proving "B is identical to A" proves nothing unless you also show the harness **can** detect a
@@ -238,6 +266,16 @@ operating point would have produced the wrong recommendation with good numbers b
 
 **State the limit of the claim.** That sweep ran on 8 physical cores; "16 threads" was hyperthreading.
 Scope the recommendation to the range actually tested and name the hardware assumption.
+
+## If a ratio's DENOMINATOR is the unstable term, quote a range not a number
+
+A criterion measured 2.485x at one stimulus seed and **4.114x at another** — a 1.6x swing in the
+ratio. The cause was not the effect: the seed redraws the **stimulus**, not the map, and the
+**denominator** (the random control) moved 0.065 on an identical map while the numerator moved 0.026.
+
+**Quote it as "2.5-4.1x", not "2.49x".** A re-run landing at 4.1 otherwise reads as a discrepancy and
+sends someone hunting a regression that is not there. And note which term is the unstable one — that
+the anatomical map was also the **steadier** of the two is a second finding sitting in the same data.
 
 ## A ratio can be load-robust while its delta is not — quote the ratio
 
