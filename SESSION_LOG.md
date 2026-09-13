@@ -2089,3 +2089,23 @@ Commands: `PYTHONPATH=. python tools/spike/reward-substrate.py` (seconds, determ
 - [judge.md]: when reproducing a units/clock defect, model both quantities separately and state which the code receives — a probe that assumes they agree will always exonerate the code.
 - [workflow]: pause commits to an issue's paths while its feature gate is open; `53891f4` split my #30 evidence across two trees.
 - [tl.md]: the SNR pre-flight comment asked for "a measurable criterion for the signal getting through" and produced AC7, which the project's credibility now rests on. Make measured-constraint pre-flight comments standard for any issue feeding a claim.
+
+---
+### [2026-09-13 16:35] — senior-developer — #6, #7, #27
+**Task**: Apply the #6 contract addendum — branch on unimplemented vs disabled; mark the disabled weapon channel
+**Result**: COMPLETED
+**Files changed**: src/viz/dopamine.js, src/viz/descending.js, tools/spike/viz-panel-probe.mjs, tools/spike/viz-panel-probe.html, SESSION_LOG.md
+**Key changes**:
+- dopamine.js — `source` is now authoritative over `enabled`. A frame with `source:"disabled"` and `enabled` true/absent previously fell through to the full LIVE treatment, rendering the control condition as a running experiment
+- dopamine.js — `prosthetic_sites` read from inside the reward object; `[]` rendered as a fault in red rather than as `prosthesis: none`
+- descending.js — a disabled channel shows `no readout` in place of a rate
+- viz-panel-probe.mjs — asserts the reward states render distinct pixels, and asserts the two control encodings agree
+**Technical decisions**:
+- Extended §8.3's normative `off` caption with `Control condition.` — flagged on the issue rather than changed silently. It is the only place the viewer learns the state is a result and not an absence
+- Went beyond the requested WEAPON fix: the 45% opacity and `disabled` suffix were already present, but a dimmed `0.2 Hz` is still a rate on screen, and #27 established there is no threshold behind that number. Suppressed the readout entirely for a disabled channel
+- Colour carries the unimplemented/disabled distinction as well as the words, because words truncate first under the degradation ladder
+**Testing**: reward-state routing 9/9 shapes; 4/4 rendering assertions; viz-shell-e2e 5/5 against the real index.html with no page errors, loadavg 5.4; JS suite 38 passed 0 skipped
+**Improvement Insights**:
+- [workflow]: my new "states must render differently" assertion fired on its first run — and it was a FALSE POSITIVE, because two input encodings of the same state correctly render alike. A distinctness check is only meaningful once the expected equivalence classes are written down; without them it either passes vacuously or flags correct behaviour. Worth stating whenever this pattern is recommended
+- [workflow]: the TL's message described this as an additive contract change, and the honest report is that it found an existing routing bug — `source:"disabled"` reached the live treatment. Forwarding a future-shape change is also a test of the current branch logic, and it is worth saying so when it turns one up
+- [qa.md]: `qa-5`'s finding cited a line number in a lookup table rather than the render path, and the treatment it asked for was already present three functions away. The finding was still right about the outcome — a misleading number on screen — so a QA report that leads with the observable symptom rather than the suspected line would have been actionable faster
