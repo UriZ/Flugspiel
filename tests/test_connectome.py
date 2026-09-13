@@ -563,16 +563,18 @@ def test_stream_allows_a_fast_transfer_under_the_same_guard(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize("victim_body,resume", [
-    (b"", False),                                  # fresh download -> O_TRUNC
+    (b"", False),                                  # fresh download -> truncating open
     (b"original important content\n", True),       # honoured resume -> O_APPEND
 ])
 def test_stream_refuses_a_symlinked_part(tmp_path, victim_body, resume):
     """A pre-planted .part symlink must be an error, not a redirect (#18).
 
     Both open-flag combinations are covered. An empty symlink target means a fresh
-    download (O_TRUNC); a non-empty one the server honours with a *matching* 206 means a
-    resume (O_APPEND) — the 206 has to match, or the Content-Range check from #17 resets
-    start to 0 and the O_APPEND path is never reached.
+    download (`append=False`, truncated by the explicit `ftruncate` after the inode
+    check — `O_TRUNC` was removed from the flags by #21); a non-empty one the server
+    honours with a *matching* 206 means a resume (`O_APPEND`) — the 206 has to match, or
+    the Content-Range check from #17 resets start to 0 and the append path is never
+    reached.
     """
     victim = tmp_path / "victim"
     victim.write_bytes(victim_body)

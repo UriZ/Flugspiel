@@ -354,8 +354,10 @@ def _stream(src: Source, part: Path, name: str) -> None:
         elif start:
             # A 206 for a range we did not ask for would append the wrong bytes onto the
             # existing prefix. `_verify` still catches it, but only after paying 1 GB of
-            # bandwidth to find out. `start = 0` re-opens with O_TRUNC, so restarting is
-            # already sound.
+            # bandwidth to find out. `start = 0` re-opens with `append=False`, which
+            # truncates the existing `.part` — via the explicit `ftruncate` after the
+            # inode check, not `O_TRUNC`, which #21 removed from the flags — so
+            # restarting is already sound.
             rng = resp.headers.get("Content-Range", "")
             if not rng.startswith(f"bytes {start}-"):
                 start = 0
