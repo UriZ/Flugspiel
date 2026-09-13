@@ -35,7 +35,7 @@ pretending (#27).
 
 **The reward loop does not change gameplay, and is not learning.** It measurably modulates KC->MBON
 efficacy and mushroom-body output, and **that modulation does not reach the game's readout neurons** —
-DNp01 receives **0.0000** of its input from MBONs. #7 pre-registers three hypotheses; the one asking
+**there is no MBON->DNp01 edge in the connectome at all** — the figure is structural, not a small number rounded down. #7 pre-registers three hypotheses; the one asking
 whether anything reaches the game came out **FALSE**, as predicted. Nothing here is training,
 learning, or improvement, and the code is forbidden from saying otherwise.
 
