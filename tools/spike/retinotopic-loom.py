@@ -97,6 +97,16 @@ def mapping_variant(loom_on: bool, loom_gain: float | None = None) -> Mapping:
     return Mapping.load(raw)
 
 
+def shipped_code_mapping(which: str) -> Mapping:
+    """The shipped config with `looming_code` on the anatomical or the shuffled map."""
+    raw = json.loads(DEFAULT_MAPPING_PATH.read_text())
+    for site in raw["sites"]:
+        if site["name"] == "looming_code" and which == "random":
+            site["code"] = "azimuth_sided_random"
+            site["code_seed"] = 101
+    return Mapping.load(raw)
+
+
 def frame(az, y, vy):
     return {"seq": 0, "t": 0.0, "phase": "playing", "mode": "fly", "score": 0, "wave": 1,
             "weapon": 0, "base": {"x": 0.5, "health": 1.0, "launchers_alive": 6},
@@ -168,6 +178,14 @@ def main() -> None:
     ap.add_argument("--combined", action="store_true")
     ap.add_argument("--addon", action="store_true")
     ap.add_argument("--sided", action="store_true")
+    ap.add_argument("--shipped-code-map", choices=("anat", "random"), default="anat",
+                    help="which column map the shipped coded site uses in --shipped-code. "
+                         "The strictest form of R-new: both arms through the encoder that "
+                         "ships, differing in the ORDERING of the same cells and nothing "
+                         "else -- same drive matching, same columns, same population")
+    ap.add_argument("--shipped-code", action="store_true",
+                    help="measure the SHIPPED encoder's own coded site, not this probe's "
+                         "injection -- the two drive-match differently near the midline")
     ap.add_argument("--sided-map", choices=("rand", "anat"), default="rand")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
@@ -189,6 +207,12 @@ def main() -> None:
     enc_ship = Encoder(brain, mapping_variant(loom_on=True))
     enc_ret = Encoder(brain, mapping_variant(loom_on=False))
     enc_half = Encoder(brain, mapping_variant(loom_on=True, loom_gain=LOOM_GAIN / 2))
+    # The encoder that actually ships, injecting through its own `looming_code` site. Its
+    # drive matching is PER SIDE, while this probe's is one global normaliser against the
+    # scalar sites' total, so the two differ where a target's bump straddles the midline.
+    # Anyone comparing a shipped number to a `retino_*`/`anat_*` number needs this arm.
+    enc_code = (Encoder(brain, shipped_code_mapping(args.shipped_code_map))
+                if args.shipped_code else None)
     cfg = enc_ship.mapping.loom
     max_inject = enc_ship.mapping.max_inject
 
@@ -216,7 +240,11 @@ def main() -> None:
              ("retino_hemi",  False, (0.52, 0.98), True,  "anat"),
              ("random_hemi",  False, (0.52, 0.98), True,  "rand"),
              ("random_full",  False, (0.02, 0.98), True,  "rand")]
-    if args.sided:
+    if args.shipped_code:
+        tag = f"ship_{args.shipped_code_map}"
+        conds = [(f"{tag}_full", "ship", (0.02, 0.98), False, None),
+                 (f"{tag}_hemi", "ship", (0.52, 0.98), False, None)]
+    elif args.sided:
         cm = "sided_anat" if args.sided_map == "anat" else "sided"
         conds = [(f"{args.sided_map}_full", False, (0.02, 0.98), True, cm),
                  (f"{args.sided_map}_hemi", False, (0.52, 0.98), True, cm)]
@@ -269,7 +297,8 @@ def main() -> None:
     for name, shipped, rng_az, match_drive, colmap in conds:
         cols = {"rand": rand_col, "sided": sided_col,
                 "sided_anat": sided_anat}.get(colmap, lc_col)
-        enc = enc_half if shipped == "half" else (enc_ship if shipped else enc_ret)
+        enc = {"half": enc_half, "ship": enc_code}.get(
+            shipped, enc_ship if shipped else enc_ret)
         add_retino = shipped in (False, "half") or args.addon
         half = shipped == "half"
         rng = np.random.default_rng(args.seed)
