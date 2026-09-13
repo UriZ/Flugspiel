@@ -34,6 +34,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import math
 import sys
 import time
 from dataclasses import dataclass, field
@@ -51,7 +52,7 @@ from fastapi import FastAPI, WebSocket  # noqa: E402
 from src.brain.decoder import Decoder  # noqa: E402
 from src.brain.encoder import Encoder  # noqa: E402
 from src.brain.lif import FlyBrain  # noqa: E402
-from src.brain.reward import RewardLoop  # noqa: E402
+from src.brain.reward import RewardError, RewardLoop  # noqa: E402
 
 PROTOCOL = 1
 MAX_FRAME_BYTES = 131072
@@ -253,7 +254,10 @@ class Session:
             self.rt.reward.reset()
             self.rt.decoder.calibrate(self.rt.encoder)
             self.rt.brain.reset()
-        self.rt.decoder.reset()  # scope="decoder" leaves learned efficacy alone (#7 §11.4)
+        # readout=True only where the brain was reset too: the EMAs describe a brain that
+        # no longer exists. On the `decoder` scope the brain carries on, so they stand
+        # (#22). Either way this is one of the three ways out of `halted`.
+        self.rt.decoder.reset(readout=scope in ("brain", "all"))
         self.detached_reported = False
 
     async def _error(self, code: str, detail: str) -> None:
@@ -288,7 +292,15 @@ class Session:
                 # every weight update lands one step late. `changed`, not the sticky
                 # `session_changed` flag, so a frame the socket never took cannot make
                 # the loop resync twice off one boundary.
-                rt.reward.on_state(state, changed)
+                try:
+                    rt.reward.on_state(state, changed)
+                except RewardError as exc:
+                    # #7's write guard fired and left W byte-identical, which is the guard
+                    # working. Letting it out of the loop would kill the session with a
+                    # 1006 and no `error` frame — #26's failure mode at a call site
+                    # written after #26 fixed it. Non-fatal: the brain still steps, the
+                    # reward contribution for this state is simply not applied.
+                    await self._error("reward_refused", str(exc))
                 self.c.unassigned = frame.unassigned
                 self.c.rejected += frame.rejected
 
@@ -305,7 +317,18 @@ class Session:
                 action = dec.decode(state or {}, min(max(now - last_decode, period), 1.0))
                 last_decode = now
                 sim_hz = (steps - 1) / (now - t_first) if steps > 1 else 0.0
-                payload = json.dumps(self._frame(action, fired, sim_hz), allow_nan=False)
+                try:
+                    payload = json.dumps(self._frame(action, fired, sim_hz), allow_nan=False)
+                except ValueError:
+                    # `allow_nan=False` is deliberate and stays: telemetry is not
+                    # sanitised, so a non-finite readout must stay loud (#35). But the
+                    # bare ValueError names no field, which makes a field report
+                    # undiagnosable — and unguarded it would end the session. Name it,
+                    # drop the frame, keep the socket.
+                    await self._error("nonfinite_frame", "; ".join(
+                        _nonfinite(self._frame(action, fired, sim_hz))) or "unknown field")
+                    self.session_changed = False
+                    continue
                 try:
                     await self.ws.send_text(payload)
                 except Exception:
@@ -324,8 +347,24 @@ class Session:
         """A session change is a restart: the decoder's latches and crosshair are stale,
         and #7 must discard reward across it rather than difference through it. The brain
         is deliberately NOT reset — it is a continuous reservoir, and reseeding it would
-        invalidate the aim zero measured under that RNG stream."""
-        value = session if _is_int(session) else 0
+        invalidate the aim zero measured under that RNG stream.
+
+        A change here also clears `halted`, and that is deliberate: only a live, emitting
+        bridge can produce one, because `_afterFrame` is both the sole emit site and the
+        sole `_session` increment site and `detach()` removes it. The change is therefore
+        *evidence* of a live bridge, not merely correlated with one (#36).
+
+        Which is exactly why a **non-int** `session` must not count. It used to coerce to
+        0 and read as a change from any other value, so a malformed field cleared `halted`
+        with no live bridge implied — two correct decisions, #26's sanitise-rather-than-
+        reject and "a change of this field is a restart", composing into a third nobody
+        chose. Garbage is not evidence: the frame is still accepted and still drives the
+        brain, the field is counted, and the last observed session stands.
+        """
+        if not _is_int(session):
+            self.c.errors["bad_session"] = self.c.errors.get("bad_session", 0) + 1
+            return False
+        value = int(session)
         if self.session is None:
             self.session = value
             return False
@@ -351,6 +390,17 @@ class Session:
                       "unassigned": c.unassigned, "errors": dict(c.errors)},
             ),
         }
+
+
+def _nonfinite(obj: Any, path: str = "") -> list[str]:
+    """Every non-finite float in a frame, named by its path. Diagnostic only (#36)."""
+    if isinstance(obj, dict):
+        return [p for k, v in obj.items() for p in _nonfinite(v, f"{path}.{k}" if path else str(k))]
+    if isinstance(obj, (list, tuple)):
+        return [p for i, v in enumerate(obj) for p in _nonfinite(v, f"{path}[{i}]")]
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return [f"{path or '<root>'}={obj!r}"]
+    return []
 
 
 def _is_int(value: Any) -> bool:
