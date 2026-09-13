@@ -138,16 +138,21 @@ Choosing the value trades two costs that move in opposite directions. `buf` belo
 PARTITIONS and paid whether or not anything fired; the scatter, in contrast, parallelises
 better the more slices there are, and its share of the step grows with how many neurons
 fired. A value below this one wins at the firing rate the network currently settles at and
-then crosses over to worse as activity rises — which is why the value is not chosen at the
-operating point. This one measured fastest or tied across the thread counts tried, and
-never worse than any other at any activity level tried (#10).
+then crosses over to worse than the value this replaced as activity rises — which is why
+the value is not chosen at the operating point. This one measured fastest or tied across
+the thread counts tried and, unlike the lower one, was never worse than the value it
+replaced at any activity level tried (#10).
 
 That sweep ran where the thread count could exceed PARTITIONS, which starves the scatter
 phase; on hardware with many more cores than this value a larger one may well win again.
 Re-measure before assuming the choice transfers, and interleave the variants.
 
-Changing this value changes the spike train, and nothing pins it (#24) — anything that
-records a trajectory has to record PARTITIONS alongside the seed and the backend.
+Changing this value changes the spike train, and it **is** pinned: `trajectory.lock.json`
+records it alongside the seed, the backend, the LIF params and the resulting spike digest,
+and `python -m src.brain.fingerprint --check` fails naming both values if it moves. Nothing
+runs that check for you, so run it after editing this constant. If the trajectory moved
+deliberately, `--update` and commit the lock in the same change — the one-line lock diff
+beside the constant is what makes the change visible to the next reader (#24).
 """
 
 
