@@ -50,9 +50,72 @@ class LIFParams:
     threshold: float = 1.0
     v_reset: float = 0.0
 
+    def __post_init__(self) -> None:
+        """Reject parameters that silently break the model instead of raising (#12).
+
+        Runs once per construction, never per step. Every one of these produced a brain
+        that still ran and still returned spike trains: `tau <= 0` gives `decay >= 1` and
+        a membrane that gains charge forever, `dt <= 0` removes the leak that puts the L
+        in LIF, `threshold <= v_reset` makes every neuron fire on every step for the life
+        of the process, and a negative `gain` swaps excitation and inhibition network-wide,
+        discarding the neurotransmitter signs baked into W. A non-finite `v_reset` is the
+        same defect as #13 by another route: `v` never recovers from it.
+
+        `tonic` carries no inequality on purpose — a hyperpolarising bias is a legitimate
+        thing to ask for — which is why finiteness is checked separately rather than being
+        left to fall out of the comparisons.
+        """
+        for name in ("dt", "tau", "gain", "tonic", "noise_hz", "noise_amp",
+                     "threshold", "v_reset"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                    or not math.isfinite(value):
+                raise ValueError(f"LIFParams.{name} must be a finite number, got {value!r}")
+        for name, ok, want in (("dt", self.dt > 0, "> 0"),
+                               ("tau", self.tau > 0, "> 0"),
+                               ("gain", self.gain >= 0, ">= 0"),
+                               ("noise_hz", self.noise_hz >= 0, ">= 0"),
+                               ("noise_amp", self.noise_amp >= 0, ">= 0"),
+                               ("threshold", self.threshold > self.v_reset, "> v_reset")):
+            if not ok:
+                raise ValueError(f"LIFParams.{name} must be {want}, "
+                                 f"got {getattr(self, name)!r}")
+
     @property
     def decay(self) -> float:
         return math.exp(-self.dt / self.tau)
+
+
+def _check_seed(seed: int) -> int:
+    """A seed that is not an int defeats the determinism this module documents (#12)."""
+    if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)):
+        why = ("None draws OS entropy, which silently breaks both the determinism "
+               "guarantee and reset()" if seed is None else
+               "np.random.default_rng would accept it and the seed stored for reset() "
+               "would not be the one asked for")
+        raise TypeError(f"seed must be an int, got {seed!r}; {why}")
+    return int(seed)
+
+
+def _check_inject(idx: np.ndarray, amount: float | np.ndarray) -> None:
+    """Reject the two ways a caller can silently corrupt `v` (#12, #13).
+
+    A NaN in `v` is permanent and invisible: `nan >= threshold` is False, so the neuron
+    never fires, never gets reset to `v_reset`, and is dropped from the network for the
+    rest of the session with nothing to observe — `rates()` does not move. A negative
+    index is worse than an error because numpy wraps it onto a real neuron at the far end
+    of the array, and -1 is a plausible "no target" sentinel out of an encoder; positive
+    out-of-range indices already raise, so the two directions disagreed.
+
+    Both checks are O(len(idx)) at the entry point, not O(n) on every step.
+    """
+    idx = np.asarray(idx)
+    if idx.size and idx.min() < 0:
+        raise IndexError(f"negative neuron index {int(idx.min())}: numpy would wrap it "
+                         f"onto a neuron at the other end of the array rather than raise")
+    if not np.all(np.isfinite(amount)):
+        raise ValueError("non-finite injection amount: a NaN in v never fires, never "
+                         "resets, and removes the neuron for the rest of the session")
 
 
 def _propagate_numpy(W: sparse.csc_matrix, fired: np.ndarray, n: int) -> np.ndarray:
@@ -139,8 +202,8 @@ class FlyBrain:
         self.n = meta.n
         self.W = sparse.csc_matrix(weights, dtype=np.float32)
         self.backend = "numba" if (backend != "numpy" and numba is not None) else "numpy"
-        self._seed = seed
-        self.reset(seed)
+        self._seed = _check_seed(seed)
+        self.reset(self._seed)
         if self.backend == "numba":
             self._synaptic_input(np.zeros(1, dtype=np.int64))  # ~1.7 s of JIT, not on frame 1
 
@@ -153,9 +216,14 @@ class FlyBrain:
         return brain
 
     def reset(self, seed: int | None = None) -> None:
-        """v ← 0, no fired neurons, step counter 0, RNG reseeded (None reuses the last seed)."""
+        """v ← 0, no fired neurons, step counter 0, RNG reseeded (None reuses the last seed).
+
+        `None` is the only non-int accepted, and it means *reuse*, never *reseed from
+        entropy* — `__init__` rejects it, so `self._seed` is always an int and `reset()`
+        always reproduces the trajectory (#12).
+        """
         if seed is not None:
-            self._seed = seed
+            self._seed = _check_seed(seed)
         self.rng = np.random.default_rng(self._seed)
         self.v = np.zeros(self.n, dtype=np.float32)
         self.fired = np.empty(0, dtype=np.int64)
@@ -176,8 +244,10 @@ class FlyBrain:
         """Add voltage now, i.e. before the next step's decay.
 
         Repeated indices accumulate (`np.add.at`), so an encoder may emit whatever index
-        array falls out of its mapping without first de-duplicating it.
+        array falls out of its mapping without first de-duplicating it. It may not emit a
+        negative index or a non-finite amount — see `_check_inject`.
         """
+        _check_inject(idx, amount)
         np.add.at(self.v, idx, amount)
 
     def _synaptic_input(self, fired: np.ndarray) -> np.ndarray:
@@ -198,6 +268,7 @@ class FlyBrain:
         self.v += p.tonic
         self.v += (self.rng.random(self.n, dtype=np.float32) < p.noise_hz * p.dt) * np.float32(p.noise_amp)
         for idx, amount in inject:
+            _check_inject(idx, amount)
             np.add.at(self.v, idx, amount)  # accumulates on repeated indices; `+=` would not
         fired = np.flatnonzero(self.v >= p.threshold).astype(np.int64, copy=False)
         self.v[fired] = p.v_reset
