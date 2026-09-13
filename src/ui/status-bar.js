@@ -97,8 +97,14 @@ export function createStatusBar({ root, client, host }) {
       score = state?.score;
     },
     observeError(e) {
-      // #4 §3.4 makes this terminal: every later decode() is a noop and the server
-      // never re-arms. Recovery is a page reload; the shell must not retry.
+      // The shell's half of #4 §3.4: it must not retry and must not re-arm the bridge,
+      // and recovery is a page reload. It is a status flag and nothing more — the shell
+      // does not stop sending states here, and the spec sentence saying it does is
+      // wrong (#36). States stop because `FlyBridge.detach()` removes the only emit
+      // site, which is the bridge's doing, not this line's.
+      //
+      // Nor is the server's `halted` unconditionally terminal: a session change is a
+      // third exit from it. That does not change what the shell should do.
       if (e?.code === 'bridge_detached') detached = true;
     },
     render() {

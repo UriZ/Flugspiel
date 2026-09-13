@@ -44,7 +44,9 @@ export async function createGameHost({ frame, client, onState }) {
      * Apply one frame's action and acknowledge it. #4 §2.3: without the result the
      * decoder treats an unconfirmed latch as committed and never learns `launcher_dead`
      * or `detached`, so the ack is sent when `ok` is true as well. The shell never
-     * retries a rejected action and never re-arms the bridge — `detached` is terminal.
+     * retries a rejected action and never re-arms the bridge, so `detached` is terminal
+     * *for this shell* — the server's `halted` has a third exit through a session
+     * change, which no shipped client can reach (#36).
      */
     applyAction(f) {
       const r = bridge.applyAction(f.action);
