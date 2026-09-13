@@ -181,10 +181,14 @@ class FlyBrain:
     """A fly brain stepping at `params.dt`.
 
     Determinism: same seed + same backend + same params ⇒ identical spike trains, on any
-    machine and at any thread count (see `PARTITIONS`). Across backends they diverge — the
-    kernels sum the same weights in different orders (~1e-7 relative), which is enough to
-    flip a neuron sitting on the threshold. Compare currents across backends with a
-    tolerance, never spike indices.
+    machine and at any thread count (see `PARTITIONS`). Across backends they diverge: the
+    two kernels sum the same weights in different orders, and the rounding difference is
+    enough to flip a neuron sitting on the threshold, after which the trajectories separate
+    and keep separating — within a second of simulated time, over a large fraction of the
+    neurons that fire (#24). The earlier wording here quoted a per-addition relative error
+    as if it bounded the trajectory; it does not, and it invited exactly the cross-backend
+    comparison it was warning against. Compare currents across backends with a tolerance,
+    never spike indices, and never a trajectory.
     """
 
     def __init__(self, weights: sparse.spmatrix, meta: BrainMeta,
@@ -208,6 +212,13 @@ class FlyBrain:
         self.reset(self._seed)
         if self.backend == "numba":
             self._synaptic_input(np.zeros(1, dtype=np.int64))  # ~1.7 s of JIT, not on frame 1
+
+    @property
+    def seed(self) -> int:
+        """The seed this brain reproduces from. Read-only: `reset(seed)` is the only way
+        to change it, because rebinding it without reseeding the RNG would make `reset()`
+        replay a trajectory the brain is not on. `fingerprint` records it (#24)."""
+        return self._seed
 
     @classmethod
     def load(cls, data_dir: Path | None = None, *, params: LIFParams = LIFParams(),

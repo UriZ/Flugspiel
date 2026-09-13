@@ -149,7 +149,7 @@ def identity_only(params: lif.LIFParams | None = None, *, seed: int = 64,
 
 def fingerprint(brain: lif.FlyBrain, *, connectome: bool = True) -> Fingerprint:
     """Fingerprint a live brain. `connectome=False` skips the one expensive field."""
-    ident = identity_only(brain.params, seed=brain._seed, backend=brain.backend)
+    ident = identity_only(brain.params, seed=brain.seed, backend=brain.backend)
     ident["connectome"] = connectome_digest(brain.W, brain.meta) if connectome else None
     return Fingerprint(identity=ident, environment=_environment())
 
