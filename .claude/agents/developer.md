@@ -60,6 +60,27 @@ silently does not take and you measure the old value. **A QA agent and a judge i
 to this on the same cluster**, which is enough to make it a rule rather than a war story. Applies to
 copied trees and scratch replicas especially.
 
+## When a change makes a previously-impossible value NORMAL, grep the consumers
+
+A value that could not occur becomes routine, and every consumer written against the old contract is
+now wrong — **including the ones that were right when written.** #40 made `prosthetic_sites == []` the
+shipped, honest state; a panel that rendered `[]` as a red *"disclosure missing (bug)"* had been
+correct under the old contract and **cried wolf on every frame from the moment #40 landed.** Nobody
+noticed for hours.
+
+**The sweep belongs in the change that makes the value normal, not in the issue filed afterwards.**
+Grep for consumers treating it as impossible, unreachable, or a fault.
+
+## A promoted probe's assertions are a contract, and a probe can pin a defect
+
+Three promoted probes in one session carried assertions that encoded behaviour a later change moved.
+The worst pinned the **defect itself**: `reward-shuffle.py:216` asserted `prosthetic_sites ==
+Encoder.prosthetic_sites` element-for-element — exactly the broken behaviour — **and passed for as long
+as it held.** A green probe is not evidence the contract is right; it is evidence the code still does
+what the probe was written against.
+
+When you change a contract, **grep the probes**, not just `src/` and `tests/`.
+
 ## Audit aliases, not just attribute writes
 
 When claiming a write-path audit is complete, `grep 'W.data\['` **misses**
