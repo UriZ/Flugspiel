@@ -105,6 +105,7 @@ class Decoder:
             self.rates = {k: 0.0 for k in self._pop}
             self._latched = {"fire": False, "weapon": False}
             self._charge = {"fire": 0.0, "weapon": 0.0}
+            self._brain_dt = 0.0
         self.crosshair_x = 0.5
         self.halted = False
         self._dead_weapons: set[int] = set()
@@ -117,7 +118,13 @@ class Decoder:
     # ---------------------------------------------------------------- per brain step
 
     def observe(self, fired: np.ndarray, dt: float) -> None:
-        """Once per brain step. `fired` is exactly what `FlyBrain.step()` returned."""
+        """Once per brain step. `fired` is exactly what `FlyBrain.step()` returned.
+
+        Also accumulates the **brain** time `decode()` will integrate over. That is the
+        only clock in this class: `dt` here is `FlyBrain.params.dt`, the same quantity the
+        rates below are per-second of, so the two compose into a spike count (#30).
+        """
+        self._brain_dt += dt
         self._mask[fired] = True
         for key, idx in self._pop.items():
             count = int(self._mask[idx].sum())
@@ -128,7 +135,15 @@ class Decoder:
     # ---------------------------------------------------------------- per decode tick
 
     def decode(self, state: dict, dt_decode: float) -> dict:
-        """One message `FlyBridge.applyAction()` accepts. At most one action per call."""
+        """One message `FlyBridge.applyAction()` accepts. At most one action per call.
+
+        `dt_decode` is **not** the clock. Everything here integrates over the brain time
+        `observe()` has accumulated since the last call, so a decode tick that covers more
+        simulated time buys proportionally more action and one that covers none buys none.
+        The argument is kept for the call signature #4 already uses, and because a caller
+        that never calls `observe()` has offered no other clock — but the production path
+        always has brain time and always uses it (#30).
+        """
         if self.halted:
             return {"action": "noop"}
         if not isinstance(state, dict):
@@ -139,12 +154,14 @@ class Decoder:
         self._pending = None
         before = dict(self._latched)
 
+        dt, self._brain_dt = (self._brain_dt or dt_decode), 0.0
+
         self._cmd = self._command()
         self.crosshair_x = float(np.clip(
-            self.crosshair_x + self.mapping.aim["k_turn"] * dt_decode * self._cmd, 0.0, 1.0))
+            self.crosshair_x + self.mapping.aim["k_turn"] * dt * self._cmd, 0.0, 1.0))
 
-        fire = self._trigger("fire", self.mapping.fire, dt_decode)
-        weapon = self._trigger("weapon", self.mapping.weapon, dt_decode)
+        fire = self._trigger("fire", self.mapping.fire, dt)
+        weapon = self._trigger("weapon", self.mapping.weapon, dt)
 
         action: dict[str, Any]
         if fire:
@@ -265,10 +282,10 @@ class Decoder:
             self._charge[key] + (self.rates[key] - channel.off_hz) * dt
         if self._charge[key] < per:
             return False
-        # Carry the remainder rather than zeroing, so the action rate follows brain time
-        # and not the decode rate: one coarse tick can deliver several actions' worth of
-        # charge, and dropping it would make a slow decoder fire less per second than a
-        # fast one off the same train. Capped at one spare so a transient leaves no queue.
+        # Carry the remainder rather than zeroing: one tick covering more brain time can
+        # deliver several actions' worth of charge, and dropping it would make a decoder
+        # that samples the same train less often fire less per second of brain time.
+        # Capped at one spare so a transient leaves no queue.
         self._charge[key] = min(self._charge[key] - per, per)
         return True
 
