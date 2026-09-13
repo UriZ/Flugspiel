@@ -157,8 +157,14 @@ class Decoder:
         dt, self._brain_dt = (self._brain_dt or dt_decode), 0.0
 
         self._cmd = self._command()
-        self.crosshair_x = float(np.clip(
+        # Written state, so a single non-finite value would be permanent — the same trap
+        # as a NaN in `FlyBrain.v` (#13). The clip does not protect it (#35), and `dt` is
+        # the caller's, so the guard is on what is about to be stored: a step that does
+        # not produce a usable position leaves the crosshair where it was.
+        moved = float(np.clip(
             self.crosshair_x + self.mapping.aim["k_turn"] * dt * self._cmd, 0.0, 1.0))
+        if math.isfinite(moved):
+            self.crosshair_x = moved
 
         fire = self._trigger("fire", self.mapping.fire, dt)
         weapon = self._trigger("weapon", self.mapping.weapon, dt)
@@ -243,9 +249,19 @@ class Decoder:
     # ---------------------------------------------------------------- internals
 
     def _index(self) -> float:
-        """Laterality in [-1, 1]. DNa02-L alone ⇒ +1 ⇒ crosshair moves right (normative)."""
+        """Laterality in [-1, 1]. DNa02-L alone ⇒ +1 ⇒ crosshair moves right (normative).
+
+        Non-finite rates give **no command**, not a non-finite one (#35). `self.rates` is
+        public mutable state and this expression manufactures a NaN from two infinities
+        on its own, so the `np.clip` downstream in `_command()` cannot be trusted to
+        sanitise it — `np.clip` bounds an infinity and passes a NaN straight through.
+        Guarding here rather than after the clip covers `_command()`, the crosshair,
+        `calibrate()`'s average and the `aim_index` telemetry in one place, all of which
+        consume this value.
+        """
         left, right = self.rates["aim_L"], self.rates["aim_R"]
-        return (left - right) / (left + right + 1e-3)
+        index = (left - right) / (left + right + 1e-3)
+        return index if math.isfinite(index) else 0.0
 
     def _command(self) -> float:
         """De-biased, dead-zoned turn rate in [-1, 1]."""

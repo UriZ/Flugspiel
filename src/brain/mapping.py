@@ -260,8 +260,16 @@ def _channel(entry: Any, where: str) -> Channel:
 
 
 def column(x: Any, columns: int) -> np.ndarray:
-    """Screen x (normalised, unclamped) → azimuth column index, clamped to [0, columns-1]."""
-    c = np.floor(np.asarray(x, dtype=np.float64) * columns)
+    """Screen x (normalised, unclamped) → azimuth column index, clamped to [0, columns-1].
+
+    The result is used as an **array index**, and the clamp alone does not make it one:
+    `np.clip` passes a NaN through and `float('nan').astype(int64)` is INT64_MIN, which
+    indexes nothing and raises out of the encoder's luminance lookup (#35). Infinities
+    the clamp does handle. Both call sites pass values that `_finite`/`_num` have already
+    coerced, so this is unreachable from the wire today — it is guarded because `column`
+    is a public helper and an index is the wrong place to find out.
+    """
+    c = np.floor(np.nan_to_num(np.asarray(x, dtype=np.float64)) * columns)
     return np.clip(c, 0, columns - 1).astype(np.int64)
 
 
