@@ -2204,3 +2204,77 @@ Commands: `PYTHONPATH=. python tools/spike/reward-substrate.py` (seconds, determ
 - [developer.md]: add — **a unit error is rarely alone.** #30 reported one expression multiplying brain-Hz by wall-seconds; the adjacent statement in the same function had the identical error and nobody had looked. When a bug report names a units mismatch, grep the whole function for the other operand before declaring it fixed.
 - [developer.md]: add — **`nohup cmd &` inside a backgrounded tool call does not survive.** Two servers launched that way died silently with empty logs and I mis-read it as a bad CLI flag. One process per background call, and confirm startup from its log before measuring.
 - [workflow]: `ws_server`'s frame schema carries `step` at top level and `step_dt`/`sim_hz` on `ready`, not under a `meta` key. I lost two live runs guessing. Worth one line in `architecture.md` naming where brain time is observable on the wire, since every timing measurement anyone makes needs it.
+
+---
+### [2026-09-13 13:30] — qa — #4, #5
+**Task**: First independent QA of #4 (WebSocket server) and #5 (split-panel UI shell) — both complete, never reviewed, never QA'd; code review and testing suspended.
+**Result**: #4 FAIL (1 bug), #5 PASS (0 bugs)
+**Issues verified**: #4 (FAIL — 16/17 checks, one Medium defect), #5 (PASS — 19/19 checks)
+**New bugs filed**: #36
+**Ports**: brain :8921 and :8923, static :8922. **:8000 and :8099 never touched.**
+**Machine**: 8 physical / 16 logical cores; loadavg 3.2–11.3 across the session, quoted per figure.
+
+**Collected sets, my own counts**: `pytest -q -ra -m "not realdata"` → **194 passed, 11 deselected, 0 skipped** (10.6 s). `npm test` → **38 pass, 0 fail, 0 skipped**. Both match the named baselines exactly.
+
+**Key findings**:
+- **#36 (Medium, filed)** — `Session._track_session` calls `Decoder.reset()` on a `session` change, which clears `halted`, so `detached` is **not terminal** on that path. Blast radius measured before assigning severity: **31 of 40 actions after the change are non-noop** (23 aim, 8 fire) into a bridge the client reported dead. Downgraded from High because I re-checked the spec's reachability premise in the code rather than quoting it — `FlyBridge.detach()` deletes `game.update`, and `_afterFrame` is the only emit site *and* the only `_session` increment site, so the shipped client cannot reach it.
+- **Gap 1 answered — neither hypothesis.** Entity count and window length were swept independently with variants **interleaved within each rep**. `frame_hz` is **20.00 at every operating point** and `sim_hz` never leaves 48.9–49.6: throughput does not degrade with waves or with time. The real mechanism is **emit burstiness against the latest-wins slot** — at a *fixed* mean 20 Hz, burst size 1/2/3/5 gives yield **1.000 / 0.509 / 0.395 / 0.297**, a 3.4× swing. Load-immune: a ratio of counts, not durations. This reproduces the reported "emitting more while processing fewer" exactly, and it is client-side timing, not a server defect.
+- **AC2 scoped rather than filed.** p95 rises monotonically with entity count (31.6 ms at 5 missiles → 44.1 ms at 200), but 200 is unreachable: `vendor/wave.js:81-166` caps a wave at ~103 spawn events over up to 40 s. Across the reachable 5–50 range p95 moves ~1 ms. My own p95 at 20 missiles: 28.6 / 33.8 / 35.0 ms over 3 reps.
+- **#26's fix holds and has no siblings I could find.** 24 hostile state shapes incl. the three killers, 19 malformed frames, binary frames, NaN/Inf/1e308/60-digit seq, 1009 at 140 kB, flood 600-states-in-43 ms → 3 frames. Origin allowlist rejects suffix, userinfo, fragment, `file://` and `null`. Bind address confirmed `127.0.0.1` by `lsof`. **Seeded fuzz: 900/900 states → 900 frames across 3 seeds, connection survived, 0 malformed, 45 spike/region cross-checks clean.**
+- **#5 gap 5 closed** — a real keystroke driven through the real `index.html` for the first time: 6/6. Keys reach the game only when focused (F1/F2/F3 are the same keys on the same live round with only focus changing), shell buttons still fire with the game focused, and fly mode suppresses human weapon keys via `VirtualInput.writeTo`.
+- **#5 gap 7 closed** — 4409 never auto-reconnects, measured by **counting the page's `WebSocket` constructions** rather than reading the status text: still 1 socket 10 s after eviction; Reconnect opens exactly 1 more and closes the intruder with 4409.
+- **The tolerance fix `34dedbe` verified — and it did not verify itself.** `shell-verify`'s A2 passed by **exact** match (654k == 654k), so the tolerance branch was never exercised. Tested `near()` directly: 13/13, including the exact 710k/709k straddle it was written for, a 2-bucket case that must still fail, and both R4 arms.
+
+**Two harness bugs of my own, recorded because they are the false-green shapes in reverse**: my first fuzz reported 61 "no frame" and 493 s. I had spliced `NaN` over a numeric *prefix* producing `"x": NaN.5`, then used `-NaN`, which Python's JSON decoder rejects. The server answered `bad_json` correctly both times; I was scoring my own malformed input as a server defect. A "FAIL" needs its input validated exactly as hard as a "PASS".
+
+**Concurrency**: `src/viz/{panel,descending,dopamine}.js` changed under me mid-session (`senior-developer-3`, #6). I served #5 from a scratchpad replica **proven bit-identical (87 files)** first, and all 9 of #5's own files were byte-identical for the whole session, so every #5 verdict is attributable. `ws_server.py` sha256 `af1941d8…` unchanged before and after every #4 run — nothing here is a `developer-reward` mid-edit artefact.
+
+**Improvement Insights**:
+- [qa.md]: add — **validate a negative result's input before reporting it.** The file already says a green run must be proven; the symmetric failure cost me 8 minutes twice. A harness that reports "the server did not answer" must first prove it sent something the server should have answered — echo the exact bytes on the first failure.
+- [qa.md]: add — **a check that passes by exact match has not exercised its tolerance.** `shell-verify`'s A2 went green on `654k == 654k`, which proves nothing about the ±1-unit fix committed for preservation. When a fix widens an assertion, the widened branch needs its own direct test, because the natural run will usually miss it.
+- [CLAUDE.md]: `emitted` from `bridge.getStats()` is **not** a throughput measure — the server coalesces states that land in one step period, so `emitted` can rise while delivered frames fall by 3.4×. Worth one line wherever #7 is told which counters to trust, since a reward loop keying on emit counts would read burstiness as progress.
+- [workflow]: `ws_server.py` is in three agents' scope at once (#4 QA, #7 reward, #22/#25/#26 fixes). Hashing the file before and after each measurement took seconds and converted "is this a mid-edit artefact?" from a question into a stated fact. Worth making standard whenever the TL names a concurrent editor.
+
+---
+### [2026-09-13 19:40] — developer — #35, #31, #33
+**Task**: `np.clip` propagates NaN, so every clip-then-trust site is unguarded (#35); a rejected charge-driven fire is dropped rather than re-offered and the clear-on-release branch is unreachable (#31); three stale `O_TRUNC` comments (#33).
+**Result**: COMPLETED, all three.
+**Files changed**: `src/brain/decoder.py`, `src/brain/mapping.py`, `src/brain/connectome.py`, `tests/test_connectome.py` (comment text only)
+**Commits**: `47080a9` (#35), `1227cc9` (#31), `8308774` (#33). Local only, not pushed.
+
+**Key changes**:
+- `decoder.py:252-266` — `_index()` returns 0.0 when the laterality index is non-finite. One guard covering `_command()`, the crosshair, `calibrate()`'s average and the `aim_index` telemetry.
+- `decoder.py:158-168` — the crosshair write is guarded separately: persistent state, so one non-finite value would be permanent (#13's trap).
+- `mapping.py:262-273` — `column()` maps NaN to 0 before the floor; its output is an array index.
+- `decoder.py:158, 188, 213` — `_charge` travels in `_pending` and is restored by `on_result`.
+- `decoder.py:302-311` — the clear-on-release branch kept, comment corrected to "defensive and cannot currently change behaviour".
+- `decoder.py:17-23` — module docstring no longer credits the clear with keeping rest quiet.
+- `connectome.py:357`, `tests/test_connectome.py:566, 573` — the three stale `O_TRUNC` comments.
+
+**Measurements** (2026-09-13; harness `/private/tmp/.../scratchpad/{clip35,reoffer31,dead31}.py`):
+- **`np.clip(nan, 0, 1) = nan`; `np.clip(inf, 0, 1) = 1.0`** — confirmed. It bounds infinities and passes NaN.
+- **All 14 clips in `src/brain/` audited** (excluding `reward.py`'s, fixed on #7). Eleven safe with a recorded reason; two defects (`decoder.py:254`, `:160`); one latent (`mapping.py:265`).
+- **Encoder verdicts measured, not argued**: 27 combinations — nine hostile wire values (`nan`, `±inf`, `±1e308`, `"x"`, `None`, `{}`, `[]`) placed simultaneously in `base.health`, `launchers[].hp/x` and `missiles[].x/y/vx/vy`, crossed with `crosshair_x` of `0.5`/`nan`/`inf` — produced **zero** non-finite injections, luminance, loom or drive. `_finite`/`_obj`/`_list` run first.
+- **The defect, end to end**: `self.rates` is public mutable state and `_index()` computes `inf − inf` = NaN *before* any clip. `aim_L = nan` or `aim_L = aim_R = inf` → `_index() = nan` → `crosshair_x = nan` → `{"x": nan}` in the action and three non-finite telemetry fields → **`json.dumps(allow_nan=False)` raises and the session dies**. After: `index = 0.0`, `crosshair = 0.5`, frame serialises.
+- **`column(nan, 36)` returned `-9223372036854775808`** (INT64_MIN) and that value is used as an array index. Now 0.
+- **A path I expected and disproved rather than reporting**: `observe()` with `dt = 1e-300`, hoping `count/dt` would overflow into the rates. It does not — `a = 1 − exp(−dt/tau)` is proportionally tiny and cancels it exactly. The reachable route is a caller writing `decoder.rates` directly.
+- **#31.1 reproduced against the fix**, pooled `fire_hz` 20 Hz: rejection at the charge fire (tick 6) now gives **`F.....FF....F.` with `fired = 3`**, against `F.....F....F..` / 2 before — byte-for-byte the same shape as the edge row.
+- **#31.2 re-verified, because my own fix could have made the branch reachable** (`_charge` is now written by `on_result` too). Shipped `_trigger` vs a variant with the clear removed, over **2,506 streams** (6 real 120 s DNp01 trains + 2,000 uniform[0,8] Hz + 500 uniform[0,40] Hz, 400 ticks each) at **three** rejection rates — none, every fire, every 3rd fire: **0 differing sequences in all three runs**.
+- **#33 — four mentions, not three.** `connectome.py:287` is **correct** (it is `_open_nofollow`'s docstring explaining why `O_TRUNC` is *not* in the flags) and was left alone. Verified against the code: `:301-302` builds `O_WRONLY|O_CREAT|O_NOFOLLOW|O_NONBLOCK` (+`O_APPEND`) with no `O_TRUNC`, and truncation is `os.ftruncate(fd, 0)` at `:315`, after the `fstat` check.
+
+**Decisions taken, with the reasoning**:
+- **#35 — guard at `_index()`, not after the clip.** AC3 requires the guard before consumption; `_index()` is the single point all four rates are consumed for aim, so one check covers four consumers.
+- **#35 — guard the crosshair write separately** even though `_index()` already covers the reachable route. It is persistent state: the #13 lesson is that a non-finite value written into state you keep is permanent, and defence there is not redundancy but a different property.
+- **#35 — `mapping.column()` guarded despite being unreachable**, because it is a public helper and its output is an array index.
+- **#35 — `telemetry()`'s raw `fire_hz`/`weapon_hz` left unguarded and reported.** The only route is a caller corrupting a public dict, which is the `brain.v` class rather than clip-then-trust; sanitising silently would hide it, and emitting `null` changes a schema #5/#6 consume.
+- **#31.2 — kept the dead branch rather than deleting it.** It makes "charge does not survive a cold period" true by construction rather than by the accident of the `rising` branch overwriting it, and the comment names exactly what would make it load-bearing.
+- **#31.1 — made `test_reject_does_not_consume_fire`'s comment true instead of narrowing it**, which was AC1's other branch. That test still passes unchanged because it exercises the edge path — which is precisely why it never caught this.
+- **#33 — `SESSION_LOG.md`'s `O_TRUNC` mentions left untouched.** They are dated records of what was true when written; rewriting an audit trail to match present code is worse than the stale comment the issue is about.
+
+**Testing**: suspended — **no test written, no test modified other than two comment strings, none needed repair**. Named collected sets, zero skips: `tests/test_decoder.py + test_encoder.py + test_mapping.py` → **109 passed**; `+ test_connectome.py` → **167 passed**; `-m "not realdata"` → **194 passed, 11 deselected**.
+
+**Improvement Insights**:
+- [developer.md]: add — **when a fix changes who writes a piece of state, re-run the proofs that state was previously dead.** #31.1 put `_charge` into the revert protocol; #31.2's "this branch is unreachable" was proven before that existed. Inheriting the earlier result would have been reasonable-looking and wrong in principle. The re-run cost 40 seconds and added two rejection-rate axes qa-5's original did not have.
+- [developer.md]: add — **report the path you expected and disproved, not only the one you found.** I predicted `observe(dt=1e-300)` would overflow the rates; the EMA's `a` factor cancels it exactly. Saying so stops the next agent re-deriving it, and it is the same rule CLAUDE.md already applies to negative results.
+- [qa.md]: add — **a stale-comment issue should be re-grepped tree-wide, and correct occurrences listed alongside the stale ones.** #33 reported three; the tree has four, and the fourth is right. Without naming it, the next pass "fixes" a true sentence — and the count changing from 3 to 4 looks like a regression rather than a more careful search.
+- [CLAUDE.md]: consider adding to the guard-writing rule — **`np.clip` is a range limiter, never a sanitiser.** It bounds `±inf` and passes NaN through, so `clip` upstream of a write reads as protection and is not. The correct order is `nan_to_num` then `clip`, which `encoder.py:253-254` already does and is the pattern to copy.
