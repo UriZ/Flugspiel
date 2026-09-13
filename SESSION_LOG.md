@@ -1793,3 +1793,22 @@ Commands: `PYTHONPATH=. python tools/spike/reward-substrate.py` (seconds, determ
 - [developer.md]: add — **do not put a number in an issue comment that you did not measure under the configuration you shipped.** I carried a `spikes_per_action: 12` row from a sweep taken at the old `on_hz` and before the charge-carry fix into a table labelled as the final sweep, and had to post a correction. Rule: every row of a results table gets re-run against the final code, or gets deleted.
 - [workflow]: **capture the spike train once, then sweep the readout rule offline.** Each 120 s brain-time condition costs ~27 s of wall time; the six-condition capture ran once and then fed ~40 parameter combinations in under a second each, calling the *real* `Decoder._trigger` unbound on a three-field shim so nothing was reimplemented. The live closed-loop run then reproduced the replay column exactly, which is what makes the cheap sweep trustworthy. Worth naming as the standard pattern for tuning any brain readout.
 - [CLAUDE.md]: the "you are the only agent running" claim in a task brief is not verifiable by the receiving agent and was wrong here. Suggest agents `git log --oneline HEAD@{1}..HEAD` (or compare against the SHA in their brief) before reporting a final digest, and report any commit they did not make.
+
+---
+### [2026-09-13 12:15] — senior-developer — #6
+**Task**: Settle #6's canvas model (2D / WebGL / OffscreenCanvas+worker) by measurement
+**Result**: COMPLETED
+**Files changed**: tools/spike/viz-canvas-model.mjs, tools/spike/viz-canvas-model.html, tools/spike/viz-positions.py (new), SESSION_LOG.md
+**Key changes**:
+- tools/spike/viz-positions.py — new: exports the real XZ soma projection from data/brain.npz as a binary the fixture fetches. 84.4% of neurons carry coordinates
+- viz-canvas-model.html — replaced the prior draft's synthetic random blobs with the real layout; added `imagedata-map-2d` and `composite-2d`; wired `__rasterCost`, which the prior draft defined but never called; added `__coverage` + per-model screenshots; fixed a normalized-UNSIGNED_BYTE bug that made both WebGL models render every neuron dim
+- viz-canvas-model.mjs — added `--dpr` and `--firing`; replaced the killed agent's unverified expected-output header with measured numbers
+**Technical decisions**:
+- Kept the prior agent's harness (round-robin interleave, real game iframe, loadavg per row) — it was sound. Replaced the layout because clustering drives overdraw, and overdraw is most of what separates these models
+- Recommended main-thread Canvas 2D + ImageData scatter. The worker is 6.60 vs 4.50 ms at dpr 2 — a loss, not a win — so #5's §5.2 ownership split does not need to change and `transferControlToOffscreen()` (irreversible, per-canvas) should not be taken
+- Measured dpr 2 and a 6x firing burst specifically because at dpr 1 / 8.5% firing six of eight models tie at 60 fps and the ranking is unresolvable
+**Testing**: Verification by execution (testing suspended, no new tests written). 3 rounds x 4 s x 8 models at dpr1/8.5%, dpr2/8.5%, dpr2/50%; game confirmed in `playing` state each run; every model screenshotted and pixel-counted against a blank canvas
+**Improvement Insights**:
+- [workflow]: the vacuity check found a real defect here — both WebGL models were measured for two full runs while rendering every neuron dim, and only the screenshot caught it. A spike that reports a number should be required to also report evidence the work happened, not just that it was fast. Cheapest form is a screenshot plus a non-background pixel count
+- [CLAUDE.md]: "backlog notes are user intent, not verified fact" should extend to facts inherited between agents. "Only 28 of 6,006 photoreceptors have a soma position" was true and was carried forward as "do not assume coordinates exist"; the real figure is 84.4% across the connectome, and taking it at face value would have cost #6 its anatomy
+- [workflow]: a killed agent's in-flight work should be committed with its expected-output headers stripped or marked UNVERIFIED. `34dedbe` shipped a header asserting a results table that had never been run
