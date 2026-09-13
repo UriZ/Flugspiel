@@ -36,10 +36,10 @@ with it and nothing else in the artifact changes.
 
 Binary layout (little-endian throughout; every array starts 4-byte aligned)
 --------------------------------------------------------------------------
-    header, 64 bytes, zero-padded
+    header, 72 bytes, zero-padded
         u8[6]   magic  b"FSVIZL"
         u16     version
-        u32     n, n_super, n_dn, n_dn_type, n_seg, dn_cols, names_bytes
+        u32     n, n_super, n_dn, n_dn_type, n_seg, dn_cols, names_bytes, n_mark, n_grp
         f32[3]  pane_aspect   w/h of each pane's bbox, for the contain-fit
         f32[3]  pane_um       bbox width in micrometres, for the scale bars
     u16[2n]     uv            normalised WITHIN the neuron's own pane, [0,65535]
@@ -53,7 +53,19 @@ Binary layout (little-endian throughout; every array starts 4-byte aligned)
     u8[n]       super_idx     index into the class-name table
     u8[n_dn]    dn_side       0 = L, 1 = R, 2 = M
     u8[n_seg]   seg_super     index into the class-name table, 255 = "other"
-    u8[names_bytes]           n_super then n_dn_type NUL-terminated UTF-8 names
+    u32[n_mark] mark_idx      neuron indices of every marked group, concatenated
+    u32[n_grp]  grp_off, grp_count
+    u16[n_grp]  grp_name      index into the group-name table
+    u8[n_grp]   grp_role      0 = game readout channel, 1 = prosthetic injection site
+    u8[n_grp]   grp_enabled   0 = declared in the mapping but switched off
+    u8[n_grp]   grp_side      0 = L, 1 = R, 2 = M, 3 = either
+    u8[names_bytes]           n_super, then n_dn_type, then n_grp NUL-terminated names
+
+Marked groups exist so the panel never hardcodes a descending slot number or a cell
+type. Which neurons a game channel reads and which are driven by a prosthesis are
+properties of `src/brain/mappings/*.json` against this connectome, and resolving them
+here means a mapping edit re-resolves on the next build instead of silently leaving the
+panel labelling the wrong neurons.
 
 Index i is `BrainMeta.ids[i]` order — the same order as both axes of W and of the packed
 spike vector, so `uv[i]` belongs to the neuron whose bit is `i` in a snapshot.
@@ -63,20 +75,23 @@ Run it to see the summary it prints; the figures belong on the issue, not in thi
 from __future__ import annotations
 
 import argparse
+import json
 import struct
 from pathlib import Path
 
 import numpy as np
 
 MAGIC = b"FSVIZL"
-VERSION = 1
-HEADER_BYTES = 64
+VERSION = 2
+HEADER_BYTES = 72
 VOXEL_NM = 8.0                 # see module docstring
 BRAIN_VNC_SPLIT = 0.30         # normalised Z; the band around it holds ~1 soma
 PANE_BRAIN, PANE_VNC, PANE_NONE = 0, 1, 2
 UNPLACED_COLS = 168            # lattice columns in the "no soma position" strip
 SEG_GAP = 0.004                # normalised gap between strip segments
 SEG_OTHER = 255
+ROLE_READOUT, ROLE_PROSTHESIS = 0, 1
+SIDE_ANY = 3
 
 
 def _align4(b: bytearray) -> None:
@@ -84,7 +99,8 @@ def _align4(b: bytearray) -> None:
         b.append(0)
 
 
-def build(npz: Path) -> tuple[bytes, dict]:
+def build(npz: Path, mapping_path: Path | None = None) -> tuple[bytes, dict]:
+    mapping = json.loads(mapping_path.read_text()) if mapping_path and mapping_path.exists() else None
     z = np.load(npz, allow_pickle=True)
     pos, sup, ctype, side = z["position"], z["superclass"], z["cell_type"], z["side"]
     n = len(pos)
@@ -210,20 +226,65 @@ def build(npz: Path) -> tuple[bytes, dict]:
     for j, k in enumerate(np.flatnonzero(dn_side == 2)):   # midline: its own short row
         dn_col[k] = j
 
-    names = b"".join(s.encode() + b"\0" for s in classes + dn_types)
+    # ---- marked groups: game readout channels and prosthetic injection sites -------
+    groups: list[tuple[str, int, int, int, np.ndarray]] = []   # name, role, enabled, side, idx
+    side_code_any = {"L": 0, "R": 1, "M": 2, None: SIDE_ANY}
+
+    def cells(types, want_side):
+        # `Brain.cells` is np.isin(cell_type, types) with an optional side filter; this
+        # must agree with it exactly or the panel marks neurons the decoder never reads.
+        m = np.isin(ctype, list(types))
+        if want_side is not None:
+            m &= side == want_side
+        return np.flatnonzero(m).astype(np.uint32)
+
+    if mapping is not None:
+        aim = mapping.get("aim", {})
+        for s_ in ("L", "R"):
+            groups.append((f"aim_{s_}", ROLE_READOUT, 1, side_code_any[s_],
+                           cells(aim.get("types", []), s_)))
+        fire = mapping.get("fire", {})
+        groups.append(("fire", ROLE_READOUT, 1, SIDE_ANY, cells(fire.get("types", []), None)))
+        weapon = mapping.get("weapon", {})
+        groups.append(("weapon", ROLE_READOUT, int(bool(weapon.get("enabled", True))),
+                       SIDE_ANY, cells(weapon.get("types", []), None)))
+        for site in mapping.get("sites", []):
+            if not site.get("prosthesis"):
+                continue
+            groups.append((site["name"], ROLE_PROSTHESIS, int(bool(site.get("enabled", True))),
+                           side_code_any.get(site.get("side"), SIDE_ANY),
+                           cells(site.get("types", []), site.get("side"))))
+
+    group_names = [g[0] for g in groups]
+    mark_idx = np.concatenate([g[4] for g in groups]) if groups else np.zeros(0, np.uint32)
+    grp_off = np.zeros(len(groups), dtype=np.uint32)
+    grp_count = np.zeros(len(groups), dtype=np.uint32)
+    cursor = 0
+    for gi, g in enumerate(groups):
+        grp_off[gi] = cursor
+        grp_count[gi] = len(g[4])
+        cursor += len(g[4])
+    grp_name = np.arange(len(groups), dtype=np.uint16)
+    grp_role = np.array([g[1] for g in groups], dtype=np.uint8)
+    grp_enabled = np.array([g[2] for g in groups], dtype=np.uint8)
+    grp_side = np.array([g[3] for g in groups], dtype=np.uint8)
+
+    names = b"".join(s.encode() + b"\0" for s in classes + dn_types + group_names)
 
     out = bytearray()
     out += struct.pack("<6sH", MAGIC, VERSION)
-    out += struct.pack("<7I", n, len(classes), len(dn_slot), len(dn_types),
-                       len(segments), dn_cols, len(names))
+    out += struct.pack("<9I", n, len(classes), len(dn_slot), len(dn_types),
+                       len(segments), dn_cols, len(names), len(mark_idx), len(groups))
     out += aspect.astype("<f4").tobytes()
     out += pane_um.astype("<f4").tobytes()
     out += b"\0" * (HEADER_BYTES - len(out))
     assert len(out) == HEADER_BYTES, len(out)
 
     for arr in (uv.astype("<u2"), dn_slot.astype("<u4"), seg_count.astype("<u4"),
-                seg_u0.astype("<f4"), seg_u1.astype("<f4"), dn_type.astype("<u2"),
-                dn_col.astype("<u2"), pane, super_idx, dn_side, seg_super):
+                seg_u0.astype("<f4"), seg_u1.astype("<f4"),
+                mark_idx.astype("<u4"), grp_off, grp_count,
+                dn_type.astype("<u2"), dn_col.astype("<u2"), grp_name,
+                pane, super_idx, dn_side, seg_super, grp_role, grp_enabled, grp_side):
         out += arr.tobytes()
         _align4(out)
     out += names
@@ -237,6 +298,8 @@ def build(npz: Path) -> tuple[bytes, dict]:
         "segments": [(classes[s] if s != SEG_OTHER else "other", int(k))
                      for s, k in zip(seg_super, seg_count)],
         "bytes": len(out),
+        "groups": [(g[0], "readout" if g[1] == ROLE_READOUT else "prosthesis",
+                    "on" if g[2] else "OFF", int(len(g[4]))) for g in groups],
     }
     return bytes(out), stats
 
@@ -245,8 +308,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("-o", "--out", default="assets/viz-layout.bin", type=Path)
     ap.add_argument("--npz", default="data/brain.npz", type=Path)
+    ap.add_argument("--mapping", default="src/brain/mappings/missile_attack.json", type=Path)
     a = ap.parse_args()
-    blob, s = build(a.npz)
+    blob, s = build(a.npz, a.mapping)
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_bytes(blob)
     print(f"{a.out}: {s['bytes']:,} bytes  v{VERSION}")
@@ -256,6 +320,8 @@ def main() -> None:
     print(f"  pane width   brain {s['pane_um'][0]:.0f} um  vnc {s['pane_um'][1]:.0f} um")
     print(f"  dn={s['dn']:,} over {s['dn_types']} types in {s['dn_cols']} shared columns")
     print(f"  strip segments: {', '.join(f'{c} {k:,}' for c, k in s['segments'])}")
+    for nm, role, en, k in s["groups"]:
+        print(f"  {role:<10} {nm:<14} {en:<3} {k:>3} neurons")
 
 
 if __name__ == "__main__":

@@ -10,13 +10,14 @@
 // what makes that a visible failure instead.
 
 const MAGIC = 'FSVIZL';
-const VERSION = 1;
-const HEADER_BYTES = 64;
+const VERSION = 2;
+const HEADER_BYTES = 72;
 
 export const PANE_BRAIN = 0;
 export const PANE_VNC = 1;
 export const PANE_NONE = 2;
 export const SEG_OTHER = 255;
+const ROLE_PROSTHESIS = 1;
 
 /** Default location, resolved against this module so it survives any mount path. */
 export const layoutUrl = () => new URL('../../assets/viz-layout.bin', import.meta.url).href;
@@ -41,8 +42,10 @@ export function parseLayout(buf) {
   const nSeg = head.getUint32(24, true);
   const dnCols = head.getUint32(28, true);
   const namesBytes = head.getUint32(32, true);
-  const paneAspect = new Float32Array(buf.slice(36, 48));
-  const paneUm = new Float32Array(buf.slice(48, 60));
+  const nMark = head.getUint32(36, true);
+  const nGrp = head.getUint32(40, true);
+  const paneAspect = new Float32Array(buf.slice(44, 56));
+  const paneUm = new Float32Array(buf.slice(56, 68));
 
   let off = HEADER_BYTES;
   const take = (Ctor, count) => {
@@ -59,24 +62,47 @@ export function parseLayout(buf) {
   const segCount = take(Uint32Array, nSeg);
   const segU0 = take(Float32Array, nSeg);
   const segU1 = take(Float32Array, nSeg);
+  const markIdx = take(Uint32Array, nMark);
+  const grpOff = take(Uint32Array, nGrp);
+  const grpCount = take(Uint32Array, nGrp);
   const dnType = take(Uint16Array, nDn);
   const dnCol = take(Uint16Array, nDn);
+  const grpName = take(Uint16Array, nGrp);
   const pane = take(Uint8Array, n);
   const superIdx = take(Uint8Array, n);
   const dnSide = take(Uint8Array, nDn);
   const segSuper = take(Uint8Array, nSeg);
+  const grpRole = take(Uint8Array, nGrp);
+  const grpEnabled = take(Uint8Array, nGrp);
+  const grpSide = take(Uint8Array, nGrp);
 
   if (off + namesBytes > buf.byteLength) throw new Error('layout: truncated name table');
   const names = new TextDecoder().decode(new Uint8Array(buf, off, namesBytes)).split('\0');
   const classNames = names.slice(0, nSuper);
   const dnTypeNames = names.slice(nSuper, nSuper + nDnType);
-  if (classNames.length !== nSuper || dnTypeNames.length !== nDnType) {
+  const groupNames = names.slice(nSuper + nDnType, nSuper + nDnType + nGrp);
+  if (classNames.length !== nSuper || dnTypeNames.length !== nDnType
+      || groupNames.length !== nGrp) {
     throw new Error('layout: name table is short');
+  }
+
+  // Marked groups, resolved into something the zones can read directly. `enabled` is
+  // the mapping's own switch: a group that is declared and off must not be drawn as a
+  // group that merely is not firing.
+  const groups = [];
+  for (let g = 0; g < nGrp; g++) {
+    groups.push({
+      name: groupNames[grpName[g]],
+      role: grpRole[g] === ROLE_PROSTHESIS ? 'prosthesis' : 'readout',
+      enabled: grpEnabled[g] === 1,
+      side: ['L', 'R', 'M', ''][grpSide[g]],
+      neurons: markIdx.subarray(grpOff[g], grpOff[g] + grpCount[g]),
+    });
   }
 
   return { version, n, nSeg, dnCols, paneAspect, paneUm, uv, dnSlot, dnType, dnCol,
            dnSide, pane, superIdx, segCount, segU0, segU1, segSuper,
-           classNames, dnTypeNames };
+           classNames, dnTypeNames, groups };
 }
 
 /**
