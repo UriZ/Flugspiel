@@ -31,7 +31,8 @@
 </div>
 <script type="module">
 const HZ = 20;                    // #4 emits at the bridge's 20 Hz
-const FIRING = 0.085;             // 8.50% measured on the wire
+// 8.50% is what #4 measured on the wire; ?firing= bounds the sensitivity to a burst.
+const FIRING = +(new URLSearchParams(location.search).get('firing') || 0.085);
 const POOL = 8;                   // distinct pre-generated frames, cycled
 const viz = document.getElementById('viz');
 

@@ -2,7 +2,7 @@
 // neurons, measured rather than reasoned.
 //
 //   node tools/spike/viz-canvas-model.mjs [--rounds 3] [--seconds 4] [--headful]
-//                                         [--redraw every|ondata]
+//                                         [--redraw every|ondata] [--dpr 1|2] [--firing 0.085]
 //
 // #6's own Notes assert "Canvas 2D per-neuron drawing will not reach this". That is the
 // claim under test, not an input. Eight models render the SAME synthetic frames into a
@@ -36,25 +36,25 @@
 // backlog. drawn < posted is the tell.
 //
 // Expected output — Darwin 23.6.0, 8 physical / 16 logical cores, node v22.22.0,
-// puppeteer 25.10.0, 1600x900, panel 797x872 @ dpr 1, 20 Hz frames at 8.50% firing
-// (14,170 of 166,700 lit), loadavg ~4-5, 2026-09-13. Headless Chrome here gets REAL
-// hardware GL, not SwiftShader — the RENDERER line printed "ANGLE (Intel, ANGLE Metal
-// Renderer: Intel(R) UHD Graphics 630)" — so the WebGL rows are hardware figures. Check
-// that line before trusting them; a SwiftShader run is a different measurement.
+// puppeteer 25.10.0, 1600x900, panel 797x872 css, 20 Hz frames, loadavg 2.6-5.1,
+// 2026-09-13. Headless Chrome here gets REAL hardware GL, not SwiftShader: the RENDERER
+// line printed "ANGLE (Intel, ANGLE Metal Renderer: Intel(R) UHD Graphics 630)". Check
+// that line before trusting the WebGL rows; a SwiftShader run is a different measurement.
 //
-//   model             shell  game   panel  render-med  render-p95
-//   aggregate-2d      60     60     60     1.10        1.20
-//   fillrect-all-2d   12.8   12.7   12.8   69.40       92.40
-//   cachedbg-lit-2d   58.3   58.3   58.4   2.70        2.90
-//   imagedata-map-2d  60     60     60     1.50        1.80
-//   webgl-points      60     60     60     0.40        0.50
-//   worker-imagedata  60     60     60     1.80        2.10
-//   worker-webgl      60     60     60     0.40        0.50
-//   composite-2d      60     60     60     1.70        1.90
+//   render-ms median, by run          dpr1/8.5%   dpr2/8.5%   dpr2/50%
+//   aggregate-2d                        1.10        1.20        0.80
+//   fillrect-all-2d                    65.80       68.50       89.00   <- 13.3 / 12.7 / 8.5 fps
+//   cachedbg-lit-2d                     2.50        2.70       34.00   <- 60 / 60 / 23.1 fps
+//   imagedata-map-2d                    1.60        4.50        6.10
+//   webgl-points                        0.50        0.50        0.40
+//   worker-imagedata                    1.90        6.60        5.90
+//   worker-webgl                        0.40        0.40        0.50
+//   composite-2d                        1.80        5.10        6.50
 //
-// Headline: one fillRect per neuron is the ONLY model that misses 30 fps, and it misses
-// it by 2.3x. Every other model, including the full composite panel, holds 60/60 and
-// leaves the game's own rAF at 60 too.
+// Every model holds 60 fps shell / 60 fps game except the two marked, and those two are
+// the two whose cost scales with the number of LIT neurons. fillrect-all-2d misses 30 fps
+// everywhere; cachedbg-lit-2d passes at the measured 8.5% firing and misses at 50%, which
+// is the trap: it looks fine until the brain gets busy.
 //
 // Exit 0 always — this is a measurement, not a gate.
 
@@ -74,6 +74,8 @@ const arg = (k, d) => { const i = argv.indexOf('--' + k); return i === -1 ? d : 
 const ROUNDS = +arg('rounds', 3);
 const SECONDS = +arg('seconds', 4);
 const HEADFUL = argv.includes('--headful');
+const DPR = +arg('dpr', 1);
+const FIRING = +arg('firing', 0.085);   // 8.50% is the measured wire rate
 const REDRAW = arg('redraw', 'every');   // 'every' = per rAF (#5's contract); 'ondata' = 20 Hz
 
 const MODELS = ['aggregate-2d', 'fillrect-all-2d', 'cachedbg-lit-2d', 'imagedata-map-2d',
@@ -111,7 +113,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const browser = await puppeteer.launch({ headless: !HEADFUL, args: ['--no-sandbox'] });
 const page = await browser.newPage();
-await page.setViewport({ width: 1600, height: 900 });
+await page.setViewport({ width: 1600, height: 900, deviceScaleFactor: DPR });
 const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(String(e.message)));
 page.on('console', (m) => { if (m.type() === 'error') pageErrors.push('console: ' + m.text()); });
@@ -123,7 +125,7 @@ await page.evaluateOnNewDocument(() => {
     return cb(t);
   });
 });
-await page.goto(`http://localhost:${port}/__viz.html`, { waitUntil: 'networkidle2' });
+await page.goto(`http://localhost:${port}/__viz.html?firing=${FIRING}`, { waitUntil: 'networkidle2' });
 await sleep(2000);
 
 // Leave the start screen so the game is under real load, not drawing a title card.
