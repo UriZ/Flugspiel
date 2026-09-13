@@ -76,6 +76,30 @@ export function createDescending(layout) {
   let unpositioned = 0;
   for (let k = 0; k < nDn; k++) if (layout.pane[layout.dnSlot[k]] === 2) unpositioned++;
 
+  // Per-pixel-column accumulators for `renderStrip`, indexed `(col << 1) | side` so the
+  // layout does not depend on the plot width and a wider panel can reuse a buffer sized
+  // for a narrower one. Allocated here and reused: at 60 fps a per-render allocation of
+  // five arrays is GC churn for no benefit.
+  let bucketW = 0;
+  let bGlow = null;      // brightest afterglow in the column, any DN
+  let bPros = null;      // brightest afterglow among PROSTHETIC DNs in the column
+  let bMark = null;      // 0 none, 1 game readout, 2 prosthesis — prosthesis wins
+  let bMarkOn = null;    // the winning mark's `enabled` flag
+  let bUsed = null;      // 1 if any DN lands in this column
+  const buckets = (n) => {
+    if (bucketW >= n) {
+      bGlow.fill(0, 0, 2 * n); bPros.fill(0, 0, 2 * n); bMark.fill(0, 0, 2 * n);
+      bMarkOn.fill(0, 0, 2 * n); bUsed.fill(0, 0, 2 * n);
+      return;
+    }
+    bucketW = n;
+    bGlow = new Float32Array(2 * n);
+    bPros = new Float32Array(2 * n);
+    bMark = new Uint8Array(2 * n);
+    bMarkOn = new Uint8Array(2 * n);
+    bUsed = new Uint8Array(2 * n);
+  };
+
   return {
     get count() { return nDn; },
     get unpositioned() { return unpositioned; },
@@ -250,23 +274,65 @@ export function createDescending(layout) {
       ctx.fillStyle = '#222';
       ctx.fillRect(rect.x, rect.y + half, rect.w, 1);
 
+      // Two passes, because `plotW` is routinely narrower than `dnCols` and several DNs
+      // then share one pixel column. Drawing per DN made the LAST one written win, so a
+      // firing DN sharing a column with an idle one rendered identically to an idle one
+      // — the strip that exists to show which descending neurons are active was hiding
+      // some of them at the default panel width (#53). The first pass reduces each
+      // column to its brightest occupant, the second draws one rect per occupied column.
+      //
+      // Cost is bounded by `nDn + 2·plotW` and is independent of how many neurons are
+      // firing, which is the property AC6 rests on — the same reason `activity.js`
+      // accumulates per pixel rather than redrawing the lit set.
+      buckets(plotW);
       for (let k = 0; k < nDn; k++) {
         const side = layout.dnSide[k];
+        if (side === 2) continue;                        // its own block, drawn below
+        const b = (Math.floor((layout.dnCol[k] * plotW) / layout.dnCols) << 1) | side;
         const g = this.glow(k, nowMs);
-        const i = layout.dnSlot[k];
-        const m = marked.get(i);
-        let x;
-        let y;
-        if (side === 2) {
-          x = rect.x + plotW + 6 + (layout.dnCol[k] % mCount) * Math.max(1, mW / mCount);
-          y = rect.y + 1;
-        } else {
-          // Columns accumulate with max when the pane is narrower than dnCols, never
-          // overwrite — the same rule as the map's per-pixel accumulation.
-          x = rect.x + Math.floor((layout.dnCol[k] * plotW) / layout.dnCols);
-          y = side === 0 ? rect.y + 1 : rect.y + half + 2;
+        bUsed[b] = 1;
+        if (g > bGlow[b]) bGlow[b] = g;
+        const m = marked.get(layout.dnSlot[k]);
+        if (m) {
+          const kind = m.role === 'prosthesis' ? 2 : 1;
+          if (kind >= bMark[b]) { bMark[b] = kind; bMarkOn[b] = m.enabled ? 1 : 0; }
+          // Magenta means a PROSTHETIC neuron fired, not that one shares the column: a
+          // column coloured for an injected neuron that was silent would claim the
+          // injection drove something it did not.
+          if (kind === 2 && g > bPros[b]) bPros[b] = g;
         }
-        const h = side === 2 ? rect.h - 2 : tickH;
+      }
+      for (let side = 0; side < 2; side++) {
+        const y = side === 0 ? rect.y + 1 : rect.y + half + 2;
+        for (let c = 0; c < plotW; c++) {
+          const b = (c << 1) | side;
+          if (!bUsed[b]) continue;
+          const x = rect.x + c;
+          const g = bGlow[b];
+          if (g > 0) {
+            ctx.globalAlpha = 0.35 + 0.65 * g;
+            ctx.fillStyle = bPros[b] > 0 ? C.prosthetic : C.dn;
+          } else {
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = C.tickIdle;
+          }
+          ctx.fillRect(x, y, tickW, tickH);
+          if (bMark[b]) {             // a cap so the wired 12 are findable when silent
+            ctx.globalAlpha = bMarkOn[b] ? 1 : 0.5;
+            ctx.fillStyle = bMark[b] === 2 ? C.prosthetic : C.dnReadout;
+            ctx.fillRect(x, side === 1 ? y + tickH - 2 : y, Math.max(2, tickW), 2);
+          }
+        }
+      }
+      // The midline block needs no accumulation: `dn_col` numbers those neurons 0..n-1
+      // in their own row, so no two share a column at any panel width.
+      for (let k = 0; k < nDn; k++) {
+        if (layout.dnSide[k] !== 2) continue;
+        const x = rect.x + plotW + 6 + (layout.dnCol[k] % mCount) * Math.max(1, mW / mCount);
+        const y = rect.y + 1;
+        const h = rect.h - 2;
+        const m = marked.get(layout.dnSlot[k]);
+        const g = this.glow(k, nowMs);
         if (g > 0) {
           ctx.globalAlpha = 0.35 + 0.65 * g;
           ctx.fillStyle = m && m.role === 'prosthesis' ? C.prosthetic : C.dn;
@@ -275,10 +341,10 @@ export function createDescending(layout) {
           ctx.fillStyle = C.tickIdle;
         }
         ctx.fillRect(x, y, tickW, h);
-        if (m) {                      // a cap so the wired 12 are findable when silent
+        if (m) {
           ctx.globalAlpha = m.enabled ? 1 : 0.5;
           ctx.fillStyle = m.role === 'prosthesis' ? C.prosthetic : C.dnReadout;
-          ctx.fillRect(x, side === 1 ? y + h - 2 : y, Math.max(2, tickW), 2);
+          ctx.fillRect(x, y, Math.max(2, tickW), 2);
         }
       }
       ctx.globalAlpha = 1;
@@ -290,6 +356,11 @@ export function createDescending(layout) {
       }
     },
 
-    destroy() { slotOf.clear(); marked.clear(); },
+    destroy() {
+      slotOf.clear();
+      marked.clear();
+      bGlow = bPros = bMark = bMarkOn = bUsed = null;
+      bucketW = 0;
+    },
   };
 }

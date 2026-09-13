@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<!--
+  Fixture for tools/spike/viz-dn-strip.mjs. Mounts the REAL src/viz/panel.js and drives
+  one descending neuron at a time, so what is measured is the shipped render path and
+  not a reimplementation of it.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>#53 DN strip probe</title>
+<style>
+  html,body{margin:0;height:100%;background:#111;overflow:hidden}
+  #viz-panel{width:720px;height:872px;background:#101010;position:relative;overflow:hidden}
+  #viz-canvas{display:block;width:100%;height:100%}
+</style>
+</head>
+<body>
+<div id="viz-panel"><canvas id="viz-canvas"></canvas></div>
+<script type="module">
+import { createPanel } from '/src/viz/panel.js';
+import { parseLayout } from '/src/viz/layout.js';
+
+const N = 166700;
+const BYTES = Math.ceil(N / 8);
+const STRIP_BG_CSS = '#141414';       // renderStrip's own background fill
+
+const layoutBuf = await (await fetch('/assets/viz-layout.bin')).arrayBuffer();
+const L = parseLayout(layoutBuf.slice(0));
+const classSize = {};
+for (let i = 0; i < L.n; i++) {
+  const k = L.classNames[L.superIdx[i]];
+  classSize[k] = (classSize[k] || 0) + 1;
+}
+
+const ready = {
+  type: 'ready', protocol: 1, n: N, backend: 'numba', sim_hz: 50, step_dt: 0.02,
+  ac2_capable: true, regions: Object.keys(classSize),
+  populations: { descending: L.dnSlot.length },
+  prosthetic_sites: [],
+};
+
+const canvas = document.getElementById('viz-canvas');
+const vizPanel = document.getElementById('viz-panel');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });
+const panel = createPanel(canvas, ready);
+
+let step = 1000;
+// No spikes anywhere but the DN slots under test: every other zone then holds still and
+// a difference inside the strip can only have come from the neuron being driven.
+const emptyRegions = {};
+for (const k of Object.keys(classSize)) emptyRegions[k] = 0;
+
+let seed = 12345;
+const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+const POPC = new Uint8Array(256);
+for (let i = 1; i < 256; i++) POPC[i] = (i & 1) + POPC[i >> 1];
+
+/** A packed vector with `firing` of the bits set, in the wire's bit order. */
+function spikes(firing) {
+  const bytes = new Uint8Array(BYTES);
+  if (firing >= 1) { bytes.fill(0xff); }
+  else {
+    let want = Math.round(N * firing);
+    while (want > 0) {
+      const i = (rnd() * N) | 0;
+      if ((bytes[i >> 3] >> (7 - (i & 7))) & 1) continue;
+      bytes[i >> 3] |= 1 << (7 - (i & 7));
+      want--;
+    }
+  }
+  let pop = 0;
+  for (let i = 0; i < BYTES; i++) pop += POPC[bytes[i]];
+  return { n: N, bytes, popcount: pop };
+}
+
+function frame(active, sp) {
+  return {
+    step: (step += 3), ackSeq: null, session: 1, action: null,
+    spikes: sp || { n: N, bytes: new Uint8Array(BYTES), popcount: 0 },
+    regions: emptyRegions,
+    descending: { aim_index: 0, aim_cmd: 0, crosshair_x: 0.5, aim_zero: 0, fire_hz: 0,
+                  weapon_hz: 0, y_source: 'threat', halted: false, stats: {}, active },
+    reward: { value: 0, source: 'unimplemented', session_changed: false },
+    meta: { sim_hz: 50, dropped: 0, rejected: 0, unassigned: 0, errors: {} },
+    recvMs: performance.now(),
+  };
+}
+
+const applyGeometry = () => {
+  const r = vizPanel.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(r.width * dpr));
+  const h = Math.max(1, Math.round(r.height * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  panel.resize({ cssW: r.width, cssH: r.height, dpr, w, h });
+};
+
+const draw = (active, sp) => {
+  panel.push(frame(active, sp));
+  applyGeometry();
+  panel.render(performance.now());
+};
+
+const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+/** The strip's rect in device px, taken from the draw call the SHIPPED renderer makes
+ *  when it fills its own background — not recomputed here. A probe that reimplements
+ *  the geometry it is measuring can agree with itself while both are wrong, and a
+ *  bounding box over the background colour picks up stray antialiased pixels elsewhere
+ *  on the canvas (measured: it returned nearly the whole panel). */
+function stripBox() {
+  const proto = CanvasRenderingContext2D.prototype;
+  const orig = proto.fillRect;
+  let found = null;
+  proto.fillRect = function patched(x, y, w, h) {
+    if (this === ctx && this.fillStyle === STRIP_BG_CSS && w > 40 && h > 4) found = { x, y, w, h };
+    return orig.call(this, x, y, w, h);
+  };
+  try { draw([]); } finally { proto.fillRect = orig; }
+  if (!found) return null;
+  const d = window.devicePixelRatio || 1;
+  return { x: Math.round(found.x * d), y: Math.round(found.y * d),
+           w: Math.round(found.w * d), h: Math.round(found.h * d) };
+}
+
+const read = (box) => new Uint32Array(
+  ctx.getImageData(box.x, box.y, box.w, box.h).data.buffer).slice();
+
+const differs = (a, b) => {
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return true;
+  return false;
+};
+
+let box = null;
+let baseline = null;
+
+window.__strip = {
+  ready: true,
+
+  setSize(w, h) {
+    vizPanel.style.width = `${w}px`;
+    vizPanel.style.height = `${h}px`;
+    applyGeometry();
+  },
+
+  /** Idle strip, and the box every later sample is compared inside. */
+  prepare() {
+    draw([]);
+    box = stripBox();
+    if (!box) return null;
+    baseline = read(box);
+    return { box, dpr: window.devicePixelRatio || 1, cssW: vizPanel.clientWidth,
+             nDn: L.dnSlot.length, dnCols: L.dnCols };
+  },
+
+  /** Light exactly one DN and report whether the strip changed at all. Geometry-free on
+   *  purpose: it asks the question the issue asks — is a firing DN distinguishable from
+   *  an idle one — without depending on where the tick is supposed to land. */
+  sample(k) {
+    draw([k]);
+    return differs(read(box), baseline);
+  },
+
+  /** Median `push` and `render` cost at a given firing rate and DN activity.
+   *
+   *  The question #53's AC3 asks is whether the fix made cost scale with the LIT count.
+   *  `descending.active` is that count for the strip, so the two arms are "nothing
+   *  firing" and "every descending neuron firing", with the map's own firing swept
+   *  alongside it because the same run also covers the bit-order change in
+   *  `activity.js`. */
+  cost(firing, allActive, frames) {
+    const sp = spikes(firing);
+    const active = [];
+    if (allActive) for (let k = 0; k < L.dnSlot.length; k++) active.push(k);
+    const pushes = [];
+    const renders = [];
+    for (let f = 0; f < frames; f++) {
+      const fr = frame(active, sp);
+      let t = performance.now();
+      panel.push(fr);
+      pushes.push(performance.now() - t);
+      t = performance.now();
+      panel.render(performance.now());
+      renders.push(performance.now() - t);
+    }
+    return { push: median(pushes), render: median(renders), popcount: sp.popcount,
+             active: active.length };
+  },
+
+  /** Predicted collisions, straight from the artifact. An independent cross-check on the
+   *  pixel result: these are the DNs that SHARE a pixel column with another DN on the
+   *  same side, which is the population at risk under last-writer-wins. */
+  collisions(plotW) {
+    const seen = new Map();
+    let shared = 0;
+    for (let k = 0; k < L.dnSlot.length; k++) {
+      const side = L.dnSide[k];
+      if (side === 2) continue;
+      const key = `${side}:${Math.floor((L.dnCol[k] * plotW) / L.dnCols)}`;
+      const n = (seen.get(key) || 0) + 1;
+      seen.set(key, n);
+      if (n === 2) shared += 2;
+      else if (n > 2) shared += 1;
+    }
+    return { shared, buckets: seen.size };
+  },
+};
+</script>
+</body>
+</html>
