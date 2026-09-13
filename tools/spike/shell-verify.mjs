@@ -289,14 +289,23 @@ if (NO_BRAIN) {
     skip('A5', 'A2 did not connect');
   } else {
     const stepA = +live.a.step, stepB = +live.b.step;
+    // §11 AC2 is ±1 formatting unit, not exact string equality: the bar samples its own
+    // 20 frames at a different instant than this harness does, so the two windows can
+    // straddle a rounding bucket even when status-bar.js is exactly right. Compared in
+    // absolute terms against the coarser of the two units, so a k/M boundary does not
+    // read as a mismatch either. R4 is unaffected — the naive estimator is orders out.
+    const scale = (s) => (s.endsWith('M') ? 1e6 : s.endsWith('k') ? 1e3 : 1);
+    const unit = (s) => (s.endsWith('M') ? 1e4 : scale(s));   // 'M' prints two decimals
+    const near = (x, y) => Math.abs(parseFloat(x) * scale(x) - parseFloat(y) * scale(y))
+                           <= Math.max(unit(x), unit(y));
     // A ticking step counter proves the socket is alive, NOT that the loop is closed:
     // the brain steps on its own and the bar looks identical while every action is
     // bouncing off a start screen. `accepted` and `phase` are the discriminator.
     check('A2', live.a.conn === `live · ${live.backend}` && Number.isInteger(stepA) && stepB > stepA
             && live.a.score !== '—' && live.a.spikes !== '—' && live.stats.bad === 0
             && live.phase === 'playing' && live.accepted > 0 && live.rejected === 0
-            && live.sendErrors === 0 && live.formula.shown === live.formula.correct
-            && live.formula.naive !== live.formula.correct,
+            && live.sendErrors === 0 && near(live.formula.shown, live.formula.correct)
+            && !near(live.formula.naive, live.formula.correct),
       `conn="${live.a.conn}" step ${stepA} -> ${stepB} (+${stepB - stepA} in 1 s) score="${live.a.score}" (game ${live.gameScore}) spikes/s="${live.formula.shown}" == fmtRate(mean popcount ${live.formula.meanPop} over ${live.formula.n} frames x sim_hz ${live.formula.simHz.toFixed(2)}) = ${live.formula.correct}; the naive popcount x observed ${live.formula.obsHz.toFixed(1)} Hz would read ${live.formula.naive} (R4). title="${live.b.title}" | loop: phase=${live.phase} emitted=${live.emitted} accepted=${live.accepted} rejected=${live.rejected} sendErrors=${live.sendErrors} frames=${live.stats.frames} bad=${live.stats.bad}`);
 
     // A5 before A2b, while frames are still arriving.

@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<!--
+  Fixture for tools/spike/viz-canvas-model.mjs — #6's canvas-model decision.
+  NOT the panel. Six rendering models over identical synthetic frames, in a panel the
+  size of #5's viz panel, with the real game in an iframe so the rAF contention is real.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>#6 canvas model spike</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0a}
+  #app{display:grid;grid-template-columns:797px 6px 1fr;grid-template-rows:1fr 28px;height:100%}
+  #viz,#game{position:relative;overflow:hidden;background:#101010}
+  #status{grid-column:1/-1;color:#c8c8c8;font:12px ui-monospace,monospace;padding:6px}
+  canvas,iframe{display:block;width:100%;height:100%;border:0}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="viz"></div>
+  <div id="divider" data-role="divider"></div>
+  <div id="game"><iframe id="gf" src="/game.html" title="game"></iframe></div>
+  <div id="status">spike</div>
+</div>
+<script type="module">
+const N = 166700;                 // ready.n on the real build
+const FIRING = 0.085;             // 8.50% measured on the wire
+const HZ = 20;                    // #4 emits at the bridge's 20 Hz
+const POOL = 8;                   // distinct pre-generated frames, cycled
+const BYTES = Math.ceil(N / 8);
+const viz = document.getElementById('viz');
+
+// ── synthetic frames, pre-generated so the feed costs nothing per frame ──────────
+// Deterministic: the same bits every run, so a model is never advantaged by a luckier
+// firing pattern. Only the COUNT of set bits drives cost, but fixing them removes the
+// question entirely.
+let seed = 12345;
+const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+const pool = [];
+for (let f = 0; f < POOL; f++) {
+  const b = new Uint8Array(BYTES);
+  let lit = 0;
+  const want = Math.round(N * FIRING);
+  while (lit < want) {
+    const i = (rnd() * N) | 0;
+    if (!((b[i >> 3] >> (7 - (i & 7))) & 1)) { b[i >> 3] |= 1 << (7 - (i & 7)); lit++; }
+  }
+  pool.push(b);
+}
+const POPC = new Uint8Array(256);
+for (let i = 1; i < 256; i++) POPC[i] = (i & 1) + POPC[i >> 1];
+const popcount = (b) => { let p = 0; for (let i = 0; i < b.length; i++) p += POPC[b[i]]; return p; };
+const LIT = popcount(pool[0]);
+
+// ── a region-clustered layout: 27 blobs, neurons scattered inside their own ──────
+// Positions are fixed once. What matters for cost is that fillrect/webgl CAN place a
+// neuron anywhere, and imagedata CANNOT — see the probe's report.
+const REGIONS = 27;
+const posX = new Float32Array(N), posY = new Float32Array(N);
+{
+  const cx = [], cy = [];
+  for (let r = 0; r < REGIONS; r++) { cx.push(0.08 + 0.84 * rnd()); cy.push(0.08 + 0.84 * rnd()); }
+  for (let i = 0; i < N; i++) {
+    const r = i % REGIONS;
+    posX[i] = Math.min(1, Math.max(0, cx[r] + (rnd() - 0.5) * 0.22));
+    posY[i] = Math.min(1, Math.max(0, cy[r] + (rnd() - 0.5) * 0.22));
+  }
+}
+
+// ── model harness ───────────────────────────────────────────────────────────────
+let current = null, rafId = 0, feedId = 0, frameIdx = 0, incoming = null;
+// 'every' = redraw each rAF (what #5's contract mandates and what AC6's "30+ fps"
+// means); 'ondata' = redraw only when a new frame arrives (the 20 Hz optimisation).
+let REDRAW = 'every';
+window.__setRedraw = (m) => { REDRAW = m; };
+let times = [], painted = 0, t0 = 0;
+
+const freshCanvas = () => {                 // transferControlToOffscreen is irreversible
+  viz.textContent = '';
+  const c = document.createElement('canvas');
+  viz.append(c);
+  const r = viz.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr);
+  return { canvas: c, w: c.width, h: c.height, cssW: r.width, cssH: r.height, dpr };
+};
+
+const unpackInto = (bytes, out) => {        // the real codec's bit order: 7 - (i & 7)
+  for (let i = 0; i < N; i++) out[i] = (bytes[i >> 3] >> (7 - (i & 7))) & 1;
+};
+
+// ---- main-thread models --------------------------------------------------------
+function makeAggregate(g) {
+  const ctx = g.canvas.getContext('2d');
+  const COLS = 64, ROWS = 32, per = Math.max(1, Math.floor(BYTES / (COLS * ROWS)));
+  return { render(bytes) {
+    ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, g.w, g.h);
+    const cw = g.w / COLS, ch = g.h / ROWS;
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      let bits = 0, s = (r * COLS + c) * per;
+      for (let i = s; i < s + per && i < BYTES; i++) bits += POPC[bytes[i]];
+      if (!bits) continue;
+      ctx.fillStyle = `rgba(63,168,138,${Math.min(1, bits / (per * 2))})`;
+      ctx.fillRect(c * cw, r * ch, cw - 1, ch - 1);
+    }
+  }, stop() {} };
+}
+
+function makeFillRect(g) {
+  const ctx = g.canvas.getContext('2d');
+  const px = new Float32Array(N), py = new Float32Array(N);
+  for (let i = 0; i < N; i++) { px[i] = posX[i] * g.w; py[i] = posY[i] * g.h; }
+  const S = Math.max(1, Math.round(2 * g.dpr));
+  return { render(bytes) {
+    ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, g.w, g.h);
+    ctx.fillStyle = '#141c1a';                       // unlit neurons, drawn dim
+    for (let i = 0; i < N; i += 1) ctx.fillRect(px[i], py[i], S, S);
+    ctx.fillStyle = '#3fa88a';                       // lit
+    for (let b = 0; b < BYTES; b++) {
+      const v = bytes[b]; if (!v) continue;
+      for (let k = 0; k < 8; k++) if ((v >> (7 - k)) & 1) {
+        const i = (b << 3) | k; if (i < N) ctx.fillRect(px[i], py[i], S, S);
+      }
+    }
+  }, stop() {} };
+}
+
+function makeFillRectLit(g) {
+  const ctx = g.canvas.getContext('2d');
+  const px = new Float32Array(N), py = new Float32Array(N);
+  for (let i = 0; i < N; i++) { px[i] = posX[i] * g.w; py[i] = posY[i] * g.h; }
+  const S = Math.max(1, Math.round(2 * g.dpr));
+  return { render(bytes) {
+    ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, g.w, g.h);
+    ctx.fillStyle = '#3fa88a';               // lit only; unlit neurons are not drawn
+    for (let b = 0; b < BYTES; b++) {
+      const v = bytes[b]; if (!v) continue;
+      for (let k = 0; k < 8; k++) if ((v >> (7 - k)) & 1) {
+        const i = (b << 3) | k; if (i < N) ctx.fillRect(px[i], py[i], S, S);
+      }
+    }
+  }, stop() {} };
+}
+
+function makeImageData(g) {
+  const ctx = g.canvas.getContext('2d');
+  const GW = 512, GH = Math.ceil(N / GW);
+  const back = document.createElement('canvas'); back.width = GW; back.height = GH;
+  const bctx = back.getContext('2d');
+  const img = bctx.createImageData(GW, GH);
+  const u32 = new Uint32Array(img.data.buffer);
+  const DIM = 0xff1a1c14, LITC = 0xff8aa83f;        // ABGR little-endian
+  ctx.imageSmoothingEnabled = false;
+  return { render(bytes) {
+    u32.fill(0xff0a0a0a);
+    for (let i = 0; i < N; i++) u32[i] = ((bytes[i >> 3] >> (7 - (i & 7))) & 1) ? LITC : DIM;
+    bctx.putImageData(img, 0, 0);
+    ctx.drawImage(back, 0, 0, GW, GH, 0, 0, g.w, g.h);
+  }, stop() {} };
+}
+
+const VS = `attribute vec2 pos; attribute float b; varying float vb;
+void main(){ gl_Position = vec4(pos.x*2.0-1.0, 1.0-pos.y*2.0, 0.0, 1.0); gl_PointSize = PTSIZE; vb = b; }`;
+const FS = `precision mediump float; varying float vb;
+void main(){ gl_FragColor = vec4(mix(vec3(0.078,0.110,0.082), vec3(0.247,0.659,0.541), vb), 1.0); }`;
+
+function glInit(gl, ptSize) {
+  const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, VS.replace('PTSIZE', ptSize.toFixed(1))));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  gl.useProgram(p);
+  const xy = new Float32Array(N * 2);
+  for (let i = 0; i < N; i++) { xy[2 * i] = posX[i]; xy[2 * i + 1] = posY[i]; }
+  const pb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, pb);
+  gl.bufferData(gl.ARRAY_BUFFER, xy, gl.STATIC_DRAW);
+  const pl = gl.getAttribLocation(p, 'pos'); gl.enableVertexAttribArray(pl);
+  gl.vertexAttribPointer(pl, 2, gl.FLOAT, false, 0, 0);
+  const bright = new Uint8Array(N);
+  const bb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bb);
+  gl.bufferData(gl.ARRAY_BUFFER, bright, gl.DYNAMIC_DRAW);
+  const bl = gl.getAttribLocation(p, 'b'); gl.enableVertexAttribArray(bl);
+  gl.vertexAttribPointer(bl, 1, gl.UNSIGNED_BYTE, true, 0, 0);
+  gl.clearColor(0.039, 0.039, 0.039, 1);
+  return { bright, bb };
+}
+
+function makeWebGL(g) {
+  const gl = g.canvas.getContext('webgl', { antialias: false, preserveDrawingBuffer: false });
+  if (!gl) throw new Error('no webgl');
+  gl.viewport(0, 0, g.w, g.h);
+  const { bright, bb } = glInit(gl, Math.max(1, 2 * g.dpr));
+  return { render(bytes) {
+    unpackInto(bytes, bright);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bb);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, bright);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.POINTS, 0, N);
+    gl.flush();
+  }, stop() { const e = gl.getExtension('WEBGL_lose_context'); if (e) e.loseContext(); } };
+}
+
+// ---- worker models -------------------------------------------------------------
+const WORKER_SRC = `
+const N=${N}, BYTES=${BYTES};
+let mode=null, off=null, ctx=null, gl=null, state=null, times=[], painted=0, t0=0;
+const POPC=new Uint8Array(256); for(let i=1;i<256;i++) POPC[i]=(i&1)+POPC[i>>1];
+function setup(m,canvas,w,h,dpr,posX,posY){
+  mode=m; off=canvas; t0=performance.now();
+  if(m==='worker-2d'){
+    ctx=off.getContext('2d');
+    const GW=512, GH=Math.ceil(N/GW);
+    const back=new OffscreenCanvas(GW,GH), bctx=back.getContext('2d');
+    const img=bctx.createImageData(GW,GH), u32=new Uint32Array(img.data.buffer);
+    ctx.imageSmoothingEnabled=false;
+    state={GW,GH,back,bctx,img,u32,w,h};
+  } else {
+    gl=off.getContext('webgl',{antialias:false});
+    gl.viewport(0,0,w,h);
+    const VS=\`attribute vec2 pos; attribute float b; varying float vb;
+      void main(){ gl_Position=vec4(pos.x*2.0-1.0,1.0-pos.y*2.0,0.0,1.0); gl_PointSize=\${Math.max(1,2*dpr).toFixed(1)}; vb=b; }\`;
+    const FS='precision mediump float; varying float vb; void main(){ gl_FragColor=vec4(mix(vec3(0.078,0.110,0.082),vec3(0.247,0.659,0.541),vb),1.0); }';
+    const sh=(t,s)=>{const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);return o;};
+    const p=gl.createProgram();
+    gl.attachShader(p,sh(gl.VERTEX_SHADER,VS)); gl.attachShader(p,sh(gl.FRAGMENT_SHADER,FS));
+    gl.linkProgram(p); gl.useProgram(p);
+    const xy=new Float32Array(N*2);
+    for(let i=0;i<N;i++){xy[2*i]=posX[i];xy[2*i+1]=posY[i];}
+    const pb=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,pb);
+    gl.bufferData(gl.ARRAY_BUFFER,xy,gl.STATIC_DRAW);
+    const pl=gl.getAttribLocation(p,'pos'); gl.enableVertexAttribArray(pl);
+    gl.vertexAttribPointer(pl,2,gl.FLOAT,false,0,0);
+    const bright=new Uint8Array(N);
+    const bb=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,bb);
+    gl.bufferData(gl.ARRAY_BUFFER,bright,gl.DYNAMIC_DRAW);
+    const bl=gl.getAttribLocation(p,'b'); gl.enableVertexAttribArray(bl);
+    gl.vertexAttribPointer(bl,1,gl.UNSIGNED_BYTE,true,0,0);
+    gl.clearColor(0.039,0.039,0.039,1);
+    state={bright,bb,w,h};
+  }
+}
+function draw(bytes){
+  const d0=performance.now();
+  if(mode==='worker-2d'){
+    const s=state, u32=s.u32;
+    u32.fill(0xff0a0a0a);
+    for(let i=0;i<N;i++) u32[i]=((bytes[i>>3]>>(7-(i&7)))&1)?0xff8aa83f:0xff1a1c14;
+    s.bctx.putImageData(s.img,0,0);
+    ctx.drawImage(s.back,0,0,s.GW,s.GH,0,0,s.w,s.h);
+  } else {
+    const s=state, b=s.bright;
+    for(let i=0;i<N;i++) b[i]=(bytes[i>>3]>>(7-(i&7)))&1;
+    gl.bindBuffer(gl.ARRAY_BUFFER,s.bb);
+    gl.bufferSubData(gl.ARRAY_BUFFER,0,b);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.POINTS,0,N);
+    gl.flush();
+  }
+  times.push(performance.now()-d0); painted++;
+}
+self.onmessage=(e)=>{
+  const m=e.data;
+  if(m.t==='setup') setup(m.mode,m.canvas,m.w,m.h,m.dpr,m.posX,m.posY);
+  else if(m.t==='frame') draw(m.bytes);
+  else if(m.t==='reset'){ times=[]; painted=0; t0=performance.now(); }
+  else if(m.t==='stats'){
+    const s=[...times].sort((a,b)=>a-b);
+    self.postMessage({t:'stats', med:s.length?s[s.length>>1]:0,
+      p95:s.length?s[Math.floor(0.95*s.length)]:0,
+      fps:+(painted/((performance.now()-t0)/1000)).toFixed(1)});
+  }
+};
+`;
+
+let worker = null, workerStats = null;
+function makeWorker(g, mode) {
+  const url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
+  worker = new Worker(url);
+  worker.onmessage = (e) => { if (e.data.t === 'stats' && workerStats) workerStats(e.data); };
+  const off = g.canvas.transferControlToOffscreen();
+  worker.postMessage({ t: 'setup', mode, canvas: off, w: g.w, h: g.h, dpr: g.dpr,
+                       posX, posY }, [off]);
+  return { render(bytes) { worker.postMessage({ t: 'frame', bytes }); },
+           stop() { worker.terminate(); worker = null; URL.revokeObjectURL(url); } };
+}
+
+// ── public API for the driver ───────────────────────────────────────────────────
+window.__start = (model) => {
+  window.__stop();
+  const g = freshCanvas();
+  current = model.startsWith('worker-') ? makeWorker(g, model)
+    : model === 'aggregate-2d' ? makeAggregate(g)
+    : model === 'fillrect-2d' ? makeFillRect(g)
+    : model === 'fillrect-lit-2d' ? makeFillRectLit(g)
+    : model === 'imagedata-2d' ? makeImageData(g)
+    : makeWebGL(g);
+  current.isWorker = model.startsWith('worker-');
+  // The feed: a fresh copy per frame, exactly as decodeSpikes() allocates one. The
+  // worker additionally pays the structured-clone — that difference is the real cost.
+  feedId = setInterval(() => { incoming = pool[frameIdx++ % POOL].slice(); }, 1000 / HZ);
+  incoming = pool[0].slice();
+  let last = null;
+  const tick = () => {
+    if (incoming) {
+      if (REDRAW === 'every' || incoming !== last) {
+        last = incoming;
+        if (current.isWorker) current.render(incoming);
+        else { const d = performance.now(); current.render(incoming); times.push(performance.now() - d); painted++; }
+      }
+    }
+    rafId = requestAnimationFrame(tick);
+  };
+  rafId = requestAnimationFrame(tick);
+};
+
+window.__resetPanel = () => {
+  times = []; painted = 0; t0 = performance.now();
+  if (current?.isWorker) worker?.postMessage({ t: 'reset' });
+};
+
+window.__panelStats = () => new Promise((res) => {
+  if (current?.isWorker && worker) {
+    workerStats = (d) => { workerStats = null; res({ fps: d.fps, med: d.med, p95: d.p95 }); };
+    worker.postMessage({ t: 'stats' });
+    setTimeout(() => { if (workerStats) { workerStats = null; res({ fps: 0, med: 0, p95: 0 }); } }, 2000);
+  } else {
+    const s = [...times].sort((a, b) => a - b);
+    res({ fps: +(painted / ((performance.now() - t0) / 1000)).toFixed(1),
+          med: s.length ? s[s.length >> 1] : 0, p95: s.length ? s[Math.floor(0.95 * s.length)] : 0 });
+  }
+});
+
+window.__stop = () => {
+  cancelAnimationFrame(rafId); clearInterval(feedId);
+  try { current?.stop(); } catch {}
+  current = null;
+};
+
+window.__env = () => {
+  const r = viz.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  const c = document.createElement('canvas');
+  const gl = c.getContext('webgl');
+  const dbg = gl && gl.getExtension('WEBGL_debug_renderer_info');
+  const renderer = gl ? (dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)) : 'NO WEBGL';
+  // The real codec's cost on this machine, so the render numbers can be read against it.
+  // Built once outside the timed loop: fromCharCode(...20838 args) overflows the stack,
+  // so it is chunked — an artefact of encoding here, not of decodeSpikes().
+  const b64 = pool.map((p) => {
+    let s = '';
+    for (let i = 0; i < p.length; i += 4096) s += String.fromCharCode.apply(null, p.subarray(i, i + 4096));
+    return btoa(s);
+  });
+  const dt = [], ut = [], out = new Uint8Array(N);
+  for (let k = 0; k < 30; k++) {
+    const src = b64[k % POOL];
+    let d0 = performance.now();
+    const bin = atob(src);                       // exactly decodeSpikes(): atob, byte
+    const bytes = new Uint8Array(bin.length);    // loop, popcount in one pass
+    let pc = 0;
+    for (let i = 0; i < bin.length; i++) { const c = bin.charCodeAt(i); bytes[i] = c; pc += POPC[c]; }
+    dt.push(performance.now() - d0);
+    if (pc !== LIT) throw new Error(`codec check: popcount ${pc} != ${LIT}`);
+    d0 = performance.now(); unpackInto(pool[k % POOL], out); ut.push(performance.now() - d0);
+  }
+  const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+  return { panelW: Math.round(r.width), panelH: Math.round(r.height), dpr, n: N, lit: LIT, hz: HZ,
+           renderer, hw: navigator.hardwareConcurrency, decodeMs: med(dt), unpackMs: med(ut) };
+};
+
+// Confirmed by execution, not cited: what a transferred canvas refuses on the main thread.
+window.__offscreenConsequences = () => {
+  const out = {};
+  const c = document.createElement('canvas');
+  c.width = 300; c.height = 150;
+  document.body.append(c);
+  const off = c.transferControlToOffscreen();
+  const t = (name, fn) => { try { const v = fn(); out[name] = 'ALLOWED' + (v === undefined ? '' : ` -> ${v}`); }
+                            catch (e) { out[name] = `THROWS ${e.name}: ${e.message}`; } };
+  t('canvas.width = 800', () => { c.width = 800; });
+  t('canvas.height = 600', () => { c.height = 600; });
+  t('read canvas.width', () => c.width);
+  t('canvas.getContext("2d")', () => String(c.getContext('2d')));
+  t('canvas.getBoundingClientRect()', () => Math.round(c.getBoundingClientRect().width));
+  t('canvas.style.width = "50px"', () => { c.style.width = '50px'; });
+  t('canvas.toDataURL()', () => c.toDataURL().slice(0, 12));
+  t('second transferControlToOffscreen()', () => String(c.transferControlToOffscreen()));
+  c.remove();
+  return out;
+};
+
+// The scrolling raster (AC2) is a separate trap: a canvas that drawImage()s itself.
+window.__rasterCost = (h) => {
+  const c = document.createElement('canvas');
+  c.width = 400; c.height = h; const x = c.getContext('2d');
+  const t = [];
+  for (let k = 0; k < 120; k++) {
+    const d = performance.now();
+    x.drawImage(c, -1, 0);                     // scroll left by one column
+    x.fillStyle = '#0a0a0a'; x.fillRect(399, 0, 1, h);
+    for (let i = 0; i < 40; i++) { x.fillStyle = '#3fa88a'; x.fillRect(399, (i * 37) % h, 1, 1); }
+    t.push(performance.now() - d);
+  }
+  t.sort((a, b) => a - b);
+  return { med: t[t.length >> 1], p95: t[Math.floor(0.95 * t.length)] };
+};
+</script>
+</body>
+</html>
