@@ -3061,3 +3061,187 @@ than a restatement.
 from earlier comments that are now wrong (AC3 provisionally-unsupported; "stranded, not
 absent"; PR = 90.8) with the evidence that changed each. A reader of any single comment in
 the thread could not otherwise tell which conclusions still stood.
+
+---
+### [2026-09-13 22:40] — judge — #7
+**Gate type**: final (feature) — #7 "Dopamine reward loop"
+**Verdict**: PASS
+**Score**: 8/10 (threshold 7)
+**Gate boundary**: HEAD `38c74ee`, branch `brain-engine`. Files hashed before and after every
+measurement: `reward.py db6addf3…`, `lif.py db796146…`, `ws_server.py e9f078e7…`,
+`missile_attack.json 479c4fc4…`, `reward-shuffle.py 4461c08b…`. Identical to the hashes QA
+recorded, so the same tree was measured. No file was mutated at any point; the two module
+variants were loaded from scratch copies under distinct names.
+
+**Independent read**: `src/brain/reward.py`, 569 lines (§11 estimated ~230).
+
+**Baseline, named**: `./.venv/bin/pytest -q -ra`, **full set, realdata included** —
+**205 passed, 0 failed, 0 skipped, 0 deselected**, exit 0, 241.29 s at loadavg 4.5,
+Python 3.13.3 against the project's stated 3.12+ floor. (`-m "not realdata"` is a
+flag-selected subset of 194; both figures are real.) QA's 997.79 s was the same suite at
+loadavg 14+.
+
+**Executed, not inherited**:
+- **Four-case phase-gate counterfactual**, my own state streams, three modules side by side.
+  Case B `[]` → `(17.95, reward)` against `b43fe20^`; case C **2 rewards vs 1** against the
+  rejected `armed = True` variant, second at 30.45 (theirs 30.95 — my pause schedule, not a
+  module difference). A and D identical across all three. "Clearing fails B, setting fails C"
+  verified rather than argued.
+- **Reachability**: 40,157 replayed states, 0 with `phase != "playing"`; the real
+  `RewardLoop._detect` instrumented over sessions 0+5 — **6,729 calls, 0 branch entries**.
+  The `b43fe20` bit-identity table is therefore bit-identical *by construction* and has **zero
+  power** to detect a defect in that change. Scored as confinement evidence only.
+- `--contract` **12 PASS / 0 FAIL**; `--direction` reward **1.0297244787** punish
+  **0.9703773260** (ten decimals against the record); `--trajectory` all 10 sessions
+  reproducing to four decimals.
+- Population counts re-derived from `data/brain.npz`: PAM11 **15**, PPL101 **2**, KC **4,064**,
+  MBON **97**.
+- **R3's fallback demonstrated live for the first time**: with the session boundary landing on
+  a single-frame `gameover` state the phase gate swallows `session_changed`, and the 1→7 jump
+  is caught by §4.3 step 5 and discarded — `resyncs=1 anomalies=1`, **no spontaneous reward**.
+
+**Key gaps** (none blocking):
+1. **NEW — `reward.py:244` `(w0 > 0).any()` should be `.all()`.** The error string says "must be
+   finite and positive" and the comment above claims it establishes "the strict positivity §5.3
+   relies on" and the induction base for `_apply`'s write guard. It establishes neither.
+   Demonstrated: a compartment with `w0 = [-0.5, 0.01]` constructs. **Latent** — all 61,210
+   KC→MBON entries are strictly positive on the shipped connectome, so no measured number moves.
+   **Second instance in `reward.py` of a check whose own comment names an invariant it does not
+   enforce** (#48 is the first) → D11's escalation makes it a must-fix before close.
+2. **#48 open (Low)** — `prosthetic_sites` → `[]` with an encoder whose prosthesis sites are all
+   disabled, reproduced exactly. Does not block: the shipped config enables them, so live runs
+   disclose correctly. Must land before anyone runs the prosthesis-off control, which is the one
+   experiment §8 exists to keep answerable.
+3. **Architect internal consistency (criterion 11)** — §4.2 and §4.3 step 3 contradicted each
+   other on arming, and §4.2's stated cap was arithmetically unreachable under §4.3's algorithm.
+   Caught downstream by the developer, cost a TL ruling, a reversal and two battery re-runs.
+4. **Zero automated tests** on `reward.py` (569 lines) + `ws_server.py` (488 lines).
+   D4/D8 SUSPENDED — not scored; the confidence cost is recorded on the issue.
+5. **AC1's event half is not implemented as written**, by design and fully disclosed
+   (§4.1 "Why there is no interception event"). AC6 is met by execution, not by a unit test.
+
+**Cross-issue finding, reported to the TL, NOT scored against #7**:
+`src/viz/dopamine.js:31` `captionIsSafe()` is **defined, exported and never called** — one
+occurrence repo-wide. It is the mechanism that enforces #7's honesty clause in the UI and its own
+comment says "Not decoration". A guard that never executes; nothing to mutate, so no battery
+could have seen it. Belongs to #6.
+
+**Correction to the TL brief (not to the ruling)**: the cap is **≤ 8, not ≤ 7**. TL decision 2
+(§4.2 supersedes §4.3 step 3) is applied unchanged; ≤ 7 is the *superseded* reading, withdrawn in
+`8442d6c`. Confirmed by execution — session 7 reads R=3 against P=2, unreachable if the timer only
+armed after a punishment. The code states ≤ 8 correctly at `reward.py:360-362`.
+
+**Honesty clause: HOLDS.** H3 FALSE (0.07 / 0.10 Hz vs a 3.0 Hz threshold). README verified fixed
+at HEAD (`773eb39`, `2ce3326`, `2a057e1`); forbidden-word sweep over `reward.py`,
+`reward-shuffle.py`, `README.md`, `missile_attack.json`, `src/viz/`, `src/ui/`, `game.html` found
+no claim-shaped hit.
+
+**Improvement Insights**:
+- **[criteria.md]**: add a row under Developer — *"a guard must be shown to execute at production
+  constants"*. Three separate things on this issue were guards that could not be seen by a
+  passing battery: the phase-gate branch (0 entries in 6,729 calls), `captionIsSafe` (0 call
+  sites), and `--contract`'s `never []` check (scoped away from the case it names). Mutation
+  cannot find any of them. Reachability is a distinct obligation from discrimination.
+- **[criteria.md]**: D11's escalation ("must-fix on a second appearance in the same file") is
+  currently written for comments falsified by a later change. Widen it to cover **a check whose
+  own comment or error message states an invariant the check does not enforce** — #48 and the
+  `.any()` guard are that class, and D11's letter caught them only by analogy.
+- **[judge.md]**: when a brief supplies a numeric consequence of a TL ruling, verify the number
+  separately from the ruling. This brief inverted the cap (≤ 7 for ≤ 8) while stating the
+  decision that implies ≤ 8 correctly; applying the decision without re-deriving its arithmetic
+  would have propagated the error into the gate record.
+- **[workflow]**: the developer reporting the unfavourable session alongside the favourable one,
+  and saying the choice existed, is the single most valuable artefact on this issue. Make
+  "disclose that a reporting choice existed" an explicit expectation rather than a virtue.
+
+---
+### [2026-09-13 22:45] — judge (second pass) — #5 + #6
+**Gate type**: final (feature), second independent pass — the UI (#5 + #6 gated together)
+**Verdict**: PASS
+**Score**: 8/10 (threshold 7)
+**Gate boundary**: `38c74ee` → `38c74ee`, HEAD did not move; issue paths clean at both ends; all 19 measured files byte-identical by `cksum`. All probes on ephemeral ports — 8000 and 8099 untouched.
+
+**Record correction**: the brief said the previous judge "posted nothing". It posted a complete FINAL (issue #6, 2026-09-13T15:56:17Z, PASS 9/10, 17,747 chars) that also ruled on both items referred to me. Two figures in the brief were the developer's rather than that gate's: #43 pre-fix 34,684 ms (not 49,087), AC6 5,000×→1.29× (not 198×→1.67×, which is QA's span).
+
+**Scope of this pass**: only what the 15:56 gate did not cover — whole-file row-11 read, independent-read count, the 10 reward routing shapes, `layout.js` refusal, #5's reconnect policy. Did **not** re-derive #42/#43/#44/#45.
+
+**Independent read**: 15 modules, **2,702 lines**, all read in full — `src/viz/` 7 files / 1,863 lines, `src/ui/` 8 files / 788 lines, shells 51 lines.
+
+**Key gaps** (all Medium, none blocking):
+- **J2-1 `descending.js:264-266`** — comment claims "columns accumulate with max … never overwrite"; the code has no max and last-writer-wins. Measured through the real panel with glow decay between samples: **16.7 % of DN ticks invisible at a 720 px panel, 51.7 % at 500 px**, 0 % above ~856 px. Prediction vs pixels agreed 59/60. Behavioural defect + row 11. **Unfiled — recommend QA/TL file it.**
+- **J2-2 `raster.js:57`** — claims denominators come from `ready.regions`, "authoritative for class sizes". Both halves false: they come from the artifact via `panel.js:112-114`, and `ws_server.py:131` emits `ready.regions` as a *name list*. `panel.js:95-97` says the opposite correctly. Believing the comment yields a permanently black raster.
+- **J2-3 `panel.js:297-306`** — docstring says gating is on fit "rather than on a round minimum width"; `panel.js:308` is `rect.h < 24`, a round minimum. The 15:56 gate called this guard "bare"; it is contradicted, not bare.
+- Prosthesis disclosure absent below 740 px panel height (low — mitigated by the DESCENDING chips).
+- `palette.js:68` "~8 frames" is ~2× out (measured 13/16). Noted, not filed.
+
+**Rulings on the two referred items**:
+1. `ready.prosthetic_sites: []` → `prosthesis: none enabled` — **upheld**. 5/5 distinct zone hashes, 5/5 distinct texts; `none enabled` grey `#6a6a6a` vs `not reported` amber `#d2a24c`. Not confusable.
+2. Sub-pixel VNC scale bar — **accepted limit** on behaviour (an unreadable 8 px legend is a false affordance); the **contradicting comment is open**, and not as a nice-to-have.
+
+**Verified by execution**: honesty gates 5 states → 5 distinct pixel hashes across 10 shapes, including the historical bug shape `{source:'disabled', enabled:true}` → `off`; `layout.js` **0 blits** on `n` mismatch with MAP OFF chip; 4409/4403 → 1 socket vs abnormal close → 6 sockets; AC6 **16,500× lit for 1.69× cost**, 9.8 ms at 99 % firing; `npm test` **38 pass / 0 fail / 0 skipped**; all 11 numeric comment claims true.
+**Not re-derived, stated plainly**: #43 — my harness design was unsound (`render()` ignores its `now` argument), so I deferred rather than report a half-measure.
+
+**Residue for the user**: `grep -rln` over `tests/` confirms **zero** tests import `src/viz/` or `src/ui/`, and nothing imports `tools/build-viz-layout.py`. "The suite is green" is vacuous about all 2,702 lines gated here.
+
+**Improvement Insights**:
+- [judge.md]: an instrumented draw call is not a rendered pixel — counting `fillRect` calls reported 0 % invisible for a defect that is entirely overdraw. Read the framebuffer.
+- [judge.md]: a decaying visual (`DECAY_MS = 300`) contaminates consecutive samples in a per-item sweep; the tell is a suspiciously uniform null.
+- [workflow]: before re-running a gate, `gh issue view N --json comments` and grep for a FINAL from the same role — a brief reconstructed from a kill timestamp mistook it for a failure to post.
+- [criteria.md]: make the per-file independent-read count a required field of judge output. The 15:56 gate checked four comments and passed D11; a whole-file read of the same tree found three defects.
+
+---
+### [2026-09-13 23:00] — judge (second pass) — #6 addendum / #52
+**Gate type**: follow-up to the second-pass feature gate — dead-export sweep of `src/viz/` and `src/ui/`
+**Verdict**: FINAL unchanged at PASS 8/10. #5/#6 closed 19:28–19:29, before this gate ran; nothing here reopens them.
+
+**#52 confirmed independently**: `grep -rnw captionIsSafe` over `src tools tests index.html game.html` → **one hit in code, its own definition** (`src/viz/dopamine.js:31`). Zero call sites, zero internal uses, no test.
+
+**Self-criticism**: I read `dopamine.js` in full for row 11 in the same gate and walked past it. My row-11 method checked comment-against-code *within* a file and never asked whether a symbol is reached — the symbol-level form of the blind spot `CLAUDE.md` names for mutation testing.
+
+**Sweep method**: every `export`ed name in `src/viz/*.js` and `src/ui/*.js`, counted with `grep -rnw` over `src tools tests index.html game.html` excluding the defining file, then every candidate re-checked by hand. The first pass's self-reference filter wrongly dropped lines beginning with `export` and would have over-reported `layoutUrl` and `rgba32`.
+
+**Two new findings, both unfiled (TL/QA to file):**
+- **J2-4 `src/ui/spike-codec.js:1,5`** — *"The ONLY place bit order is expressed … written once, here, and nowhere else."* Expressed **twice**: `spike-codec.js:40` (`unpackInto`, never called) and `src/viz/activity.js:116` (every received frame, all three panes). The declared sole authority is dead; the live copy is undocumented. A future bit-order fix would land in inert code while the map rendered wrong-but-plausibly — the hazard the comment cites #5 R6 to prevent. `unpackInto`'s own justification ("promises it to #6") expired when #6 shipped without it. **Medium — above #52**, because #52 disables a guard while this misdirects a fix. Nothing mis-renders today.
+- **J2-5 `src/viz/palette.js:81`** — `rampCss`, zero call sites; comment names "the zones that draw with fillStyle" as consumers while `raster.js:138-139` inlines its own copy with a different quantisation (`Math.round(t*63)` vs `v >> 2`). **Low.**
+
+**Swept and cleared**: `layoutUrl` (`layout.js:122`, default arg) and `rgba32` (`palette.js:87` → `GROUND32`) are zero-external but used internally — over-exported, not dead.
+
+**Revised defect count for the UI**: my FINAL named three row-11 defects; the real figure is **six** — J2-1 `descending.js:264-266`, J2-2 `raster.js:57`, J2-3 `panel.js:297-306`, #52 `dopamine.js:31`, J2-4 `spike-codec.js:1,5`, J2-5 `palette.js:81`. **Three are reachability facts, not text facts**, and two independent whole-file reads (the 15:56 gate's and mine) found none of the three.
+
+**Third instance of one project-wide shape**, after `_MIN_RATE` unreachable at the production `_CHUNK` (#17) and `--contract`'s invariant scoped out of its own view (#48): a guard written, commented as load-bearing, and never executed. A mutation battery cannot see any of them — the shipped state *is* the inert case, so there is nothing to mutate.
+
+**Improvement Insights**:
+- [criteria.md]: row 11 is a *text* rule and cannot reach a dead symbol. Add a companion clause — **every exported symbol whose comment claims it enforces or authorises something must be shown to have a call site.** One grep; it would have caught #52, J2-4 and J2-5 in a single pass.
+- [judge.md]: run the dead-export grep as a standard step of any file-wide read, before the comment-vs-code pass. Reachability first, then text.
+
+---
+### [2026-09-13 23:20] — judge — dead-guard sweep of `src/brain/` and `src/server/`
+**Task**: TL-assigned sweep for the three defect classes — dead exported symbols, guards unreachable at production constants (#17), checks scoped past their own invariant (#48).
+**Result**: **CLEAN on all three classes. Two low observations, no defects, nothing filed.**
+**Scope**: 9 files, **3,857 lines** — `connectome.py` 691, `reward.py` 569, `encoder.py` 496, `ws_server.py` 488, `decoder.py` 447, `fingerprint.py` 378, `mapping.py` 343, `lif.py` 326, `readout.py` 119.
+**Read-only throughout.** Ports 8000/8099 untouched. No file written.
+
+**Files that moved under me, disclosed rather than reported stale**: `mapping.py` `3826007613` → `3500835679` mid-sweep (`developer-aim`, #40). Sweep re-run after the change — 207 → 208 symbols, identical result. `decoder.py`, `encoder.py`, `readout.py` unchanged across the sweep (`3186443188` / `2056974000` / `118248577`). `readout.py` is in-progress #40 work and I did **not** judge it, only read it.
+
+**Class 1 — dead exported symbols: CLEAN.** AST + `tokenize` pass over **208** module-level functions, classes, methods and constants, counting **NAME tokens only** so a symbol mentioned solely in its own comment or docstring cannot read as used. Two flagged, **both cleared by hand**: `ws_server.py:426 healthz` and `ws_server.py:435 brain_ws` are FastAPI decorator routes (`@app.get`, `@app.websocket`) reached by the framework, never by name. **Zero dead symbols.**
+
+**Class 2 — unreachable guards: CLEAN.**
+- `connectome.py:380` — **#17 is correctly fixed**: `resp.read1(_CHUNK)` not `read`, with the reasoning inline. The `_MIN_RATE` guard is reachable.
+- `reward.py:420-424` — clip-then-`isfinite`. Verified empirically that `np.clip` **propagates NaN** (guard reachable) and **bounds ±inf** to a legitimate weight. The comment names exactly this mechanism and is correct.
+- `lif.py:_check_inject` — proven to fire on all three bad inputs with a clean control; see observation 2.
+- `ws_server.py` `_is_int` / `_nonfinite` — reachable from the inbound path (`_handle`, `_track_session`, the `allow_nan=False` recovery).
+
+**Class 3 — checks scoped past their own invariant: CLEAN, and three sites do the disclosure exemplarily.**
+- `connectome.py:184-193` — the ids-strictly-increasing guard states **verbatim** that it "guards the contract rather than a present caller: no consumer of a loaded brain resolves a body id today", and why it is still worth enforcing.
+- `fingerprint.py:147-160` — `identity_only` documents its **own** gap: `check_lock` calls it without a seed, so a change to `FlyBrain`'s default seed passes the constants-only check untouched; names #37 and what closes it.
+- `decoder.py:175-184` — `dt_decode` is vestigial on the production path (`self._brain_dt or dt_decode`) and the docstring says so.
+
+**Observation 1 (low) — `MAX_FRAME_BYTES` is enforced only on the documented launch path.** `ws_server.py:483` passes it as `uvicorn.run(ws_max_size=...)`; the `app` object carries no inbound size check and `Session._read` does not measure length. Under `uvicorn src.server.ws_server:app` the cap falls back to uvicorn's default — measured on the project venv, **uvicorn 0.52.4 `ws_max_size` default = 16,777,216, i.e. 128× the project's 131,072.** The documented path (`README.md:54`, `shell-verify.mjs:77`) is correct, so this is latent, not live. `ws_server.py` is frozen; reported, not touched.
+
+**Observation 2 (low) — `lif.py:_check_inject`'s non-finite arm has no reaching production caller and no test.** Both arms proven working when called directly (negative index → `IndexError`; NaN → `ValueError`; inf → `ValueError`; clean input → no raise). But `encoder.py:423` `np.nan_to_num(amounts, nan=0.0, posinf=0.0, neginf=0.0)` strips all three kinds before `step()`, verified for each — so via encoder → server → `brain.step()` the condition is unsatisfiable. **Weaker than #17**: the guard line *executes* every step, its condition merely cannot be true on that path, whereas `_MIN_RATE` never executed at all. It is real defence-in-depth for non-encoder callers (`fingerprint.py:207`, tests). What makes it worth recording is that `tests/test_lif.py`'s three `pytest.raises` cover the backend name, the shape mismatch and `cells()`'s string argument — **neither `_check_inject` arm nor `_check_seed` is asserted anywhere**, so this protection has never been demonstrated by either a test or a production path.
+
+**Coverage honesty**: classes 2 and 3 were established by reading guards in all 9 files, exhaustively in `connectome.py`, `lif.py`, `reward.py`, `fingerprint.py`, `ws_server.py`, `readout.py`, and at every `raise`/clamp site in `encoder.py`, `decoder.py`, `mapping.py`. The class-1 sweep is exhaustive by construction.
+
+**Improvement Insights**:
+- [judge.md]: for a Python dead-symbol sweep, count **NAME tokens** via `tokenize`, not regex over text — a regex counts a symbol named in its own docstring as a use, which is exactly the case being hunted. And expect decorator-registered entry points (FastAPI routes, `click`, `pytest` fixtures) as the standard false positive; clear them by hand.
+- [criteria.md]: the companion clause added for row 11 covers *exported symbol with no call site*. Observation 2 is a **second shape** it does not cover — a guard that executes but whose condition an upstream sanitiser has made unsatisfiable. Worth naming, since #17 and this one differ in exactly that way and only #17's shape is currently described.
