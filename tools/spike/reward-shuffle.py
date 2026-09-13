@@ -288,12 +288,21 @@ def _brain_and_watch(seed: int):
                    "loom": np.flatnonzero(np.isin(ct, ["LC4", "LPLC2"]) & (m.side == "L"))}
 
 
-def _disclosure(loop: RewardLoop) -> None:
+def _disclosure(loop: RewardLoop, *, encoder_live: bool) -> None:
+    """#7 §8 and its addendum. Says what was actually true of THIS run: the replay modes
+    inject the looming site directly and run neither encoder nor decoder, so no aim
+    prosthesis is active in them and claiming one would be its own small lie."""
     tel = loop.telemetry(False)
     print(f"prosthetic_sites (from snapshot.reward, #7 §8): {tel['prosthetic_sites']}")
-    print("Aiming in this run used the PFL3 `aim_bias` prosthesis. With it disabled, the "
-          "decoder's\naim is at chance (0.945 of shuffled); with it enabled it is 0.671 of "
-          "shuffled.\nDNa02 receives 0.000 of its input from LC4/LPLC2.\n")
+    if encoder_live:
+        print("Aiming in this run used the PFL3 `aim_bias` prosthesis.", end=" ")
+    else:
+        print("This run drives the brain by direct injection into LC4+LPLC2-L. No encoder\n"
+              "and no decoder run, so no aim prosthesis was active and `prosthetic_sites`\n"
+              "reads ['unknown']. In the closed loop it is active:", end=" ")
+    print("With it disabled, the decoder's\naim is at chance (0.945 of shuffled); with it "
+          "enabled it is 0.671 of shuffled.\nDNa02 receives 0.000 of its input from "
+          "LC4/LPLC2.\n")
 
 
 # ------------------------------------------------------------------ modes
@@ -347,7 +356,7 @@ def direction(cfg: RewardConfig) -> None:
 
     brain, watch = _brain_and_watch(SEEDS[0])
     loop = RewardLoop(brain, cfg, encoder=Encoder(brain))
-    _disclosure(loop)
+    _disclosure(loop, encoder_live=True)
     inj = [(watch["loom"], np.float32(LOOM_GAIN))]
     settle = int(5 * cfg.tau_elig / brain.params.dt)  # 5 tau, so this is not a transient
     for _ in range(settle):
@@ -385,7 +394,7 @@ def arms(cfg: RewardConfig, trace: dict, which: int, seeds: tuple[int, ...]) -> 
     loops = {"A": RewardLoop(brain, cfg),
              "C": RewardLoop(brain, dataclasses.replace(cfg, enabled=False))}
     loops["B"] = loops["A"]
-    _disclosure(loops["A"])
+    _disclosure(loops["A"], encoder_live=False)
 
     rows: dict[str, list[dict]] = {"A": [], "B": [], "C": []}
     for seed in seeds:

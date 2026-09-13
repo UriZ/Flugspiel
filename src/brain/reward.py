@@ -204,6 +204,10 @@ class RewardLoop:
         self._is_kc = np.zeros(brain.n, dtype=bool)
         self._is_kc[kc] = True
         self._e = np.zeros(kc.size, dtype=np.float32)
+        # Fixed for the life of the loop: `dt` is a LIFParams constant. Computed here
+        # rather than per step, because `observe` runs in the brain's hot loop.
+        a = 1.0 - math.exp(-brain.params.dt / self.cfg.tau_elig)
+        self._elig = (np.float32(1.0 - a), np.float32(a))
 
         self._parts: list[dict[str, Any]] = []
         for part in self.cfg.compartments:
@@ -245,10 +249,9 @@ class RewardLoop:
             self._dan_steps -= 1
             if not self._dan_steps:
                 self._dan_level = 0.0
-        dt = self.brain.params.dt
-        a = 1.0 - math.exp(-dt / self.cfg.tau_elig)
-        self._e *= np.float32(1.0 - a)
-        self._e[self._slot[fired[self._is_kc[fired]]]] += np.float32(a)
+        decay, a = self._elig
+        self._e *= decay
+        self._e[self._slot[fired[self._is_kc[fired]]]] += a
 
     def inject(self) -> list[tuple[np.ndarray, np.ndarray]]:
         """DAN drive for the compartment that last fired, level-held for `dan_hold`.
