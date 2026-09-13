@@ -246,13 +246,21 @@ export function createDopamine() {
       //
       // The rule is about the inner field only. `ready.prosthetic_sites` is the enabled
       // sites with a prosthesis, and `[]` there is the honest answer when none is
-      // enabled; calling that a bug is the mirror image of the error above.
+      // enabled — that is the control condition working, and flagging it red would
+      // render the honest configuration as a fault.
+      //
+      // Four different claims, so four different colours. The words differ too, but the
+      // words are what truncate first. `none enabled` states a fact about the
+      // configuration; `not reported` says no field arrived; those are not the same and
+      // must not look it. Magenta is reserved for a prosthesis that is actually there,
+      // so neither of the two states that say there is none may spend it.
       const broken = Array.isArray(inner) && inner.length === 0;
-      ctx.fillStyle = broken ? C.bad : C.prosthetic;
-      const text = broken ? 'prosthesis: EMPTY LIST — disclosure missing (bug)'
-        : sites === null ? 'prosthesis: not reported'
-        : sites.length === 0 ? 'prosthesis: none enabled'
-        : `prosthesis: ${sites.join(' ')}`;
+      const [text, colour] = broken
+        ? ['prosthesis: EMPTY LIST — disclosure missing (bug)', C.bad]
+        : sites === null ? ['prosthesis: not reported', C.warn]
+        : sites.length === 0 ? ['prosthesis: none enabled', C.key]
+        : [`prosthesis: ${sites.join(' ')}`, C.prosthetic];
+      ctx.fillStyle = colour;
       const words = text.split(' ');
       let line = '';
       for (const w of words) {
