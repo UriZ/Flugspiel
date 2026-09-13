@@ -2046,6 +2046,8 @@ Commands: `PYTHONPATH=. python tools/spike/reward-substrate.py` (seconds, determ
 
 **Three spec defects found by execution**, all reported on #7: (1) `mapping.py` is not 0 lines, the allowlist rejects the `"reward"` key; (2) §4.2 ("arms at session start", giving the ≤8-vs-7 cap) contradicts §4.3 step 3 ("`armed = False`" on resync) — implemented §4.3 as the normative and more conservative reading, architect's call; (3) §9.2's tail statistic contradicts §5.6's trajectory-minimum prediction for stalled sessions, which is why H1 splits between the two sessions.
 
+**End-to-end on the wire** (scratch harness driving the real `Session._loop` with a fake socket, real brain, 2026-09-13): 200 frames, all 11 `snapshot.reward` fields on every frame, `allow_nan=False` round-trips. A 2-launcher loss produced exactly one `value = -2.0` event. A session change with `launchers_alive` jumping **5 → 7** was discarded — `resyncs` 1→2, `anomalies` 0, `cumulative` reset — so the TL's carried #2 finding holds on the live path. 8,429 of 25,582,938 weights moved, the punish compartment and nothing else. **Zero rewards fired across 8 s of survival after the boundary**, which is §4.3 step 3 as written and is the measured evidence that §4.2's "arms at session start" was the intent. Posted to #7; not committed, it is a one-shot probe rather than a spike with a stable contract.
+
 **Not done**: `src/brain/lif.py` §6 `copy=True`. Asked for sequencing three times and was not sequenced. `reward-substrate.py` prints `OWNERSHIP FlyBrain.W shares the caller's buffer: True   <- must be False` until it lands.
 
 **Improvement Insights**:
@@ -2054,3 +2056,36 @@ Commands: `PYTHONPATH=. python tools/spike/reward-substrate.py` (seconds, determ
 - [architect.md]: add — **a pre-registered statistic must be checked against the prediction it will be compared to.** §9.2 pre-registered the tail window; §5.6 predicted the trajectory minimum. On a stalled session those measure different things and H1 flips. Pre-registration is only protective if the statistic and the prediction are the same quantity.
 - [workflow]: **a shared-file gate with no response is a silent stall.** I asked three times over the whole task and finished everything else, but the one unapplied line is the highest-severity item in the issue. A gate request should carry an explicit fallback — "if not sequenced within N, apply it in a single-purpose commit and flag it" — or the safe choice and the complete choice stay in conflict.
 - [CLAUDE.md]: add to the honesty rules — **the disclosure must describe the run it is printed under, not the system in general.** My own spike printed "aiming in this run used the PFL3 prosthesis" in replay modes that run no encoder and no decoder at all. It was a true sentence about the project and a false one about the run, and it took re-reading my own output to catch (`58170aa`).
+
+---
+### [2026-09-13 13:10] — judge — #3 (feature gate; covers #22, #25, #26, #27, #28, #30, #32)
+**Gate type**: final / feature (`GATE_FREQUENCY: feature`) — read every stage: architect spec + re-verification, three TL constraint comments, developer `[1/2]`+`[2/2]`, code review, must-fix follow-up, QA round 1 (FAIL) and QA round 2 (PASS)
+**Verdict**: **PASS**
+**Score**: 9/10 — threshold 7/10
+**Comment**: https://github.com/UriZ/Flugspiel/issues/3#issuecomment-5652573244
+**Gate boundary**: opened `500f9a0`, closed `7bcf12b`. Five commits landed mid-gate, including **`53891f4`, the #30 fix, which rewrote `decoder.py` while I was measuring it**. At close, `git status --porcelain src/brain tests` shows only ` M src/brain/reward.py` (#7's developer); `encoder.py`, `mapping.py`, `mappings/` and all four test files were unchanged across the entire gate.
+
+**Suites**: full `pytest -q -ra` **205 passed, 0 skipped** at `500f9a0` (loadavg 10.4); #3's units **109 passed, 0 skipped** at both `bff0422` (loadavg 9.9) and `7bcf12b` (loadavg 4.5). Per-file collection reconciles exactly: mapping 26 + encoder 53 + decoder 30 = 109, + brain_loop 5 + #1's 91 = 205.
+
+**All seven ACs PASS**, including **AC7, the shuffle control — real 1.000 / shuffled 0.500**. That is `criteria.md`'s project-level non-negotiable ("statistically distinguishable from shuffled game state"), carried since #1 and discharged here for the first time.
+
+**The honesty ruling — adequate against accident and drift, with one unprotected piece.** Verified by execution: a misspelled `"prostesis"` raises `MappingError`; unknown top-level/site/channel keys all raise; the honest `enabled: false` control yields `prosthetic_sites == []` consistently; and the flag plumbing is **test-pinned in both directions** (forcing the flag `False` → 2 red, forcing it `True` → 2 red). **But #32 row 7 — neutering `mapping._only`'s unknown-key check — survives a green 109**, and I showed the cost: with it neutered a typo'd config *loads*, `aim_bias_L` **injects at full gain**, and `prosthetic_sites` denies it exists. The mechanism that makes the disclosure fail closed is guarded by nothing. **Ruled the highest-priority row of #32's twelve.** Second residual: `prosthetic_sites` discloses *which* prosthesis, never *how much* — 0.671 (shipped) vs 0.945 (disabled, chance is 1.0) must travel with any claim about the aiming; the field alone under-states it.
+
+**#30 — reproduced pre-fix, fix verified post-fix.** Pre-fix (`500f9a0`–`bff0422`): fires/brain-minute 190/380/95/553 at `sim_hz` 50/25/100/17.2 — ratios 1.000/**2.000**/**0.500**/**2.911**, exactly `50/sim_hz`, matching QA's real-brain 340.2/172.2. The invariant was not merely unmet, it was **inverted**. Post-fix at `7bcf12b`: **190 at every `sim_hz`, ratio 1.000 throughout**. Closable.
+- **My own error, recorded**: the first probe *exonerated* the code because I passed `dt` as brain time — conflating the two clocks that are the defect. Modelling them separately reproduced it immediately.
+
+**#32 — ruled, not scored.** Reproduced rows 1, 3 and 7 on my own replica (digest `c8ed143fe3e1c2b4` re-asserted after each; `src/` never written). QA's headline holds: every #22/#26/#27/#28 fix is deletable with a green suite. **Not scored** — `criteria.md:80` suspends "Tests present", and the remedy here is a test. What it costs the gate, stated plainly: #3's PASS rests on execution evidence in issue comments, not on a regression suite; nothing in the repo will notice a revert. The suite is not inert — 10 of 23 killed, plus my 2 disclosure mutations killed 2-red each.
+
+**AC1 re-framed, not "79.3% partial".** Decomposed by `y`: `argmin == col(x)` is **20/20 at y=+0.40 and 20/20 at y=+0.05**; at `y ≤ 0` the enemy casts no shadow at all (`w = clip(ey,0,1)`, `encoder.py:323`), luminance is flat 1.0 and the comparison is **vacuous, not wrong**. AC1's restatement passes exactly; the 79.3% is a stronger statistic over a corpus where 37.1% of enemies are deliberately invisible. Architect question, not a defect, not AC residue.
+
+**#26's `interceptors` clause** — `interceptors` appears once in `src/brain/`, as a literal `[]` in `NEUTRAL_STATE`. No path reads it. The clause is vacuously satisfied in its first half and inapplicable in its second; counting a discard for input the module never consumes would fabricate a statistic. **Narrow the AC to the consumed keys.** Residual: a future encoder that starts reading it inherits neither sanitisation nor counting.
+
+**Deviations — all four justified**, checked against §4's normative signatures directly (§4 never mentions `SIGNALS`; `photoreceptor_columns`'s four normative positional params are unchanged; `column`/`loom` in `mapping.py` *satisfies* §3.1's actual rule). Added a fourth the brief did not list: `Channel` gains `spikes_per_action`/`enabled` and `Decoder.reset` gains keyword-only `readout` — #25's and #22's fixes, additive with defaults, but genuine departures from §4's text that should be recorded rather than absorbed.
+
+**Improvement Insights**:
+- [criteria.md]: add to the criterion-4 note — while testing is suspended, criterion 8 is *reported, not scored*, and surviving mutants are filed with per-row proof of non-equivalence. #32 is the template.
+- [criteria.md]: add an architect row for **pinned nulls** — a measured negative shipped as an assertion so it cannot rot. `test_photoreceptor_path_null_is_pinned` is the best idea in this spec and nothing rewards it.
+- [qa.md]: rank surviving mutants by what they protect, not just by count. Row 7 guards the disclosure contract and sat in a flat list of twelve.
+- [judge.md]: when reproducing a units/clock defect, model both quantities separately and state which the code receives — a probe that assumes they agree will always exonerate the code.
+- [workflow]: pause commits to an issue's paths while its feature gate is open; `53891f4` split my #30 evidence across two trees.
+- [tl.md]: the SNR pre-flight comment asked for "a measurable criterion for the signal getting through" and produced AC7, which the project's credibility now rests on. Make measured-constraint pre-flight comments standard for any issue feeding a claim.
