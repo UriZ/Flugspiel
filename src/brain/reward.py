@@ -324,9 +324,21 @@ class RewardLoop:
 
         if state.get("phase") != "playing":
             # The start screen has no launchers, so a running timer would pay out for
-            # sitting on the menu. A gate only: it never sets a sign or a magnitude.
-            self._armed = False
-            self._armed_at = t if ok else 0.0
+            # sitting on the menu. Holding `armed_at` at the current wire time is what
+            # stops that: the interval restarts the moment play resumes, so time spent
+            # outside `playing` contributes nothing. A gate only — it never sets a sign
+            # or a magnitude.
+            #
+            # `armed` itself is left alone rather than cleared or set. Clearing it made a
+            # pause behave like the session boundary #7 §4.2 was reversed over: the fly
+            # would have to be punished before it could be rewarded again, though nothing
+            # it did distinguishes surviving after a pause from surviving after a loss.
+            # **Setting** it would be worse — re-arming a spent one-shot on every
+            # transition turns §4.2's one-reward-per-interval rule into a repeating payout
+            # farmable by pausing, which is the reward hack this whole design exists to
+            # avoid. Preserving it is the only option that does neither.
+            if ok:
+                self._armed_at = t
             return NO_EVENT
         if resync or not alive_ok:
             return self._resync(alive if alive_ok else None, t if ok else 0.0, "resyncs")
