@@ -3,8 +3,9 @@
 Same seed and same params do **not** give the same trajectory. float32 addition is not
 associative and the network is chaotic, so any change to the order the synaptic input is
 summed in amplifies from one ulp to a different train within a second of simulated time.
-Two such changes are hidden inputs today: `backend="auto"` resolves to whatever wheel is
-installed, and `PARTITIONS` is a module constant nothing records.
+Two such changes are hidden inputs at the call site: `backend="auto"` resolves to whatever
+wheel is installed, and `PARTITIONS` is a bare module constant that no recording carries
+unless something puts it there.
 
 This module does not remove either. It makes them **visible**, by naming everything that
 decides a trajectory and attaching it to anything that persists one.
@@ -111,9 +112,26 @@ def connectome_digest(W, meta: BrainMeta) -> str:
 
     Not over `weights.npz`: the file carries compression and archive metadata that do not
     reach the arithmetic, and a rebuild that changed neither would report a false
-    mismatch. Not over a canonicalised matrix either — the *stored* order of the indices
-    within a column is what the numba kernel accumulates in, so two matrices holding the
-    same edges in a different order are genuinely two different trajectories.
+    mismatch.
+
+    This digest is **conservative, not tight**, and the difference is worth knowing before
+    trusting a mismatch. It covers the *stored* order of the row indices within a column,
+    which on the matrix this project ships cannot move the trajectory at all: CSC canonical
+    form has no duplicate row index inside a column, so each element of the kernel's
+    accumulator is written at most once per column and a within-column permutation reorders
+    which elements are touched, never the additions into any one of them. Reversing that
+    order moves this digest and leaves the spike digest bit-identical on both backends —
+    measured, not reasoned (#37). The order that does decide the trajectory is the one
+    *across* columns, fixed by the ascending `fired` array and by how it is sliced, i.e.
+    `PARTITIONS`, which `identity` already carries.
+
+    So a rebuild that reordered within a column would report a mismatch it should not, and
+    canonicalising first would remove that class. The reason to do it is stronger than
+    tidiness and is the one thing the paragraph above depends on: the no-duplicates premise
+    is a property of *canonical* CSC, not of CSC, and a matrix carrying duplicate entries in
+    a column really would make within-column order trajectory-relevant. Canonical form is
+    what rules that out. Deliberately **not** done here — it belongs in its own change, with
+    its own check of whether the digest moved (#37).
 
     Fed through a buffer rather than `tobytes()` to avoid copying the whole matrix.
     """
@@ -130,9 +148,16 @@ def identity_only(params: lif.LIFParams | None = None, *, seed: int = 64,
                   backend: str = "numba") -> dict[str, Any]:
     """The identity fields that need no connectome, no numba and no `FlyBrain`.
 
-    This is the part `--check` can verify anywhere, and it is what pins `PARTITIONS`:
-    the constant is read from the live module, so changing it and not updating the lock
-    is a failing check rather than a silent new trajectory.
+    This is the part `--check` can verify anywhere, and it is what pins `PARTITIONS` and
+    every `LIFParams` field: both are read from the live module, so changing one and not
+    updating the lock is a failing check rather than a silent new trajectory.
+
+    `seed` is not pinned that way and must not be read as though it were. The default above
+    is *this* module's literal, and `check_lock` calls this function without a seed, so it
+    compares the lock against a constant that moves only when this line does — a change to
+    `FlyBrain`'s own default seed passes the constants-only check untouched. The full check
+    catches it through the spike digest. Anything relying on `--no-connectome` alone is
+    relying on that gap staying closed by hand (#37).
     """
     params = params or lif.LIFParams()
     out: dict[str, Any] = {
@@ -141,8 +166,10 @@ def identity_only(params: lif.LIFParams | None = None, *, seed: int = 64,
         "params": {f.name: getattr(params, f.name) for f in dataclasses.fields(params)},
     }
     if backend == "numba":
-        # numpy never reads it; including it there would refuse a replay that is
-        # bit-identical, which `fp24.py` confirmed by running both values on both backends.
+        # numpy never reads it — `_propagate_numpy` never mentions the constant — so
+        # including it there would refuse a replay that is bit-identical. Confirmed by
+        # running both values on both backends (#24); the spike that did it was never
+        # committed, so the record is the issue, not a file.
         out["partitions"] = int(lif.PARTITIONS)
     return out
 
