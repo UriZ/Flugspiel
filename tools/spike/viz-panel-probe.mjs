@@ -89,7 +89,8 @@ const STATES = [
   ['reward-unimplemented', { conn: 'live', frames: true, firing: 0.085, reward: 'unimplemented' }],
   ['reward-live-events', { conn: 'live', frames: true, firing: 0.085, reward: 'live' }],
   ['reward-loop-off', { conn: 'live', frames: true, firing: 0.085, reward: 'off' }],
-  ['layout-mismatch', { conn: 'live', frames: true, firing: 0.085, breakLayout: true }],
+  ['layout-mismatch', { conn: 'live', frames: true, firing: 0.085, reward: 'live', breakLayout: true }],
+  ['layout-restored', { conn: 'live', frames: true, firing: 0.085, breakLayout: false }],
 ];
 
 console.log('\n=== states ===');

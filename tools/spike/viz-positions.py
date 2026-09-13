@@ -1,5 +1,11 @@
 """Export a 2D screen layout for #6's canvas-model spike (tools/spike/viz-canvas-model.mjs).
 
+    NOT the shipped artifact. `tools/build-viz-layout.py` is the build-time generator
+    that produces `assets/viz-layout.bin` for the panel; this file exists only to feed
+    the canvas-model benchmark and its format is deliberately simpler. Change the other
+    one when the panel needs something.
+
+
     python3 tools/spike/viz-positions.py OUT.bin
 
 Reads `data/brain.npz` (BrainMeta) and writes a little-endian binary the fixture fetches:

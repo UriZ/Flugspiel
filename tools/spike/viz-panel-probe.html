@@ -48,7 +48,7 @@ const ready = {
 
 const canvas = document.getElementById('viz-canvas');
 const vizPanel = document.getElementById('viz-panel');
-const panel = createPanel(canvas, ready);
+let panel = createPanel(canvas, ready);
 
 let seed = 12345;
 const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
@@ -175,9 +175,16 @@ window.__probe = {
                 brainOccupied: '(see panel)' }),
   setState(o) {
     state = { ...state, ...o };
-    if (o.breakLayout) { /* handled below by remount */ }
+    // A layout artifact whose `n` disagrees with `ready.n` is a real degraded path and
+    // has to be exercised, not asserted. The panel is rebuilt against a `ready` that
+    // does not match the artifact; nothing else changes.
+    if ('breakLayout' in o) {
+      panel.destroy();
+      panel = createPanel(canvas, o.breakLayout ? { ...ready, n: 12345 } : ready);
+      lastGeo = '';
+      step = 1_284_610;
+    }
     panel.setConnection(state.conn);
-    if (o.after === 'live') { /* frames were flowing; now they stop */ }
   },
   setSize(w, h) { vizPanel.style.width = `${w}px`; vizPanel.style.height = `${h}px`; },
   resetStats() { renderTimes = []; pushTimes.length = 0; frames = 0; t0 = performance.now(); },

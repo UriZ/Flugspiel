@@ -24,3 +24,6 @@ data/
 
 # QA screenshots
 /tmp/qa-screenshots/
+
+# Panel probe screenshots — regenerate with tools/spike/viz-panel-probe.mjs
+/tools/spike/out/

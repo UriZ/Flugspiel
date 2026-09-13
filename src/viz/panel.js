@@ -352,7 +352,10 @@ export function createPanel(canvas, ready) {
     const y2 = rect.y + 34;
     const avail = rect.w - 2 * GUTTER;
     const f = snapshot;
-    const activeFrac = f ? f.spikes.popcount / ready.n : null;
+    // brain-client.js rejects a frame whose `spikes.n` disagrees with `ready.n`, so
+    // this cannot arise from the wire — but a percentage over 100 is never a reading
+    // worth printing, and a panel that shows one is lying about something.
+    const activeFrac = f && f.spikes.popcount <= ready.n ? f.spikes.popcount / ready.n : null;
     // Values blank rather than stale once the link is gone: a number still on screen
     // after a disconnect is the wrong kind of reassuring.
     const shown = conn === 'idle' || !f ? null : f;
@@ -364,7 +367,7 @@ export function createPanel(canvas, ready) {
     // cannot see it cannot tell whether a zone is absent or merely empty.
     const row1 = [
       { k: 'step', v: shown ? fmt(shown.step) : '—', keep: 3 },
-      { k: 'active', v: shown ? `${(activeFrac * 100).toFixed(1)}%` : '—', keep: 4,
+      { k: 'active', v: shown && activeFrac !== null ? `${(activeFrac * 100).toFixed(1)}%` : '—', keep: 4,
         c: activeFrac !== null && activeFrac > ACTIVE_WARN ? C.warn : C.text },
       { k: '', v: shown ? `${fmt(shown.spikes.popcount)}/step` : '—', keep: 1 },
       { k: '', v: shown && spk !== null ? `≈${fmt(spk)} spk/s` : '—', keep: 2 },
@@ -500,7 +503,12 @@ export function createPanel(canvas, ready) {
              zones.brain.y + zones.brain.h / 2, C.warn, 10, 'center');
       }
 
-      if (dn) {
+      if (!dn) {
+        // Never silently absent. Descending identity — type names, sides, the game
+        // channels — lives entirely in the layout artifact, so without it the chips
+        // would have to invent labels. Saying why beats both a blank and a guess.
+        zoneTitle(zones.dn, 'DESCENDING', '— identity unavailable without the layout artifact');
+      } else {
         zoneTitle(zones.dn, 'DESCENDING',
           `${fmt(dn.count)} · ${dn.wired} wired to game · ${dn.unpositioned} unpositioned`);
         const inner = { x: zones.dn.x + GUTTER, y: zones.dn.y + 20,
@@ -512,7 +520,10 @@ export function createPanel(canvas, ready) {
         }
       }
 
-      if (zones.raster) {
+      if (zones.raster && !layout) {
+        zoneTitle(zones.raster, 'POPULATION RASTER',
+          '— class sizes unavailable without the layout artifact');
+      } else if (zones.raster) {
         const windowSec = raster.columns / (1000 / framePeriodMs);
         zoneTitle(zones.raster, 'POPULATION RASTER', `${ROWS.length} rows · ${windowSec.toFixed(1)} s`);
         raster.render(ctx, { x: zones.raster.x + GUTTER, y: zones.raster.y + 20,
