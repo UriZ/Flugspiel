@@ -200,7 +200,9 @@ class FlyBrain:
         self.meta = meta
         self.params = params
         self.n = meta.n
-        self.W = sparse.csc_matrix(weights, dtype=np.float32)
+        # copy=True: #7 mutates brain.W.data in place, and a CSC input already at
+        # float32 otherwise shares the caller's buffer.
+        self.W = sparse.csc_matrix(weights, dtype=np.float32, copy=True)
         self.backend = "numba" if (backend != "numpy" and numba is not None) else "numpy"
         self._seed = _check_seed(seed)
         self.reset(self._seed)
