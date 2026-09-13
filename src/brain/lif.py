@@ -61,21 +61,35 @@ def _propagate_numpy(W: sparse.csc_matrix, fired: np.ndarray, n: int) -> np.ndar
     return W @ spikes
 
 
-PARTITIONS = 16
+PARTITIONS = 8
 """How many slices `fired` is cut into — fixed, deliberately *not* the thread count.
 
 float32 addition is not associative, so the number of partial sums decides the result
 bit for bit. Keying it to `get_num_threads()` made the spike train a property of the
 machine's core count: same seed, same params, four different trains at 16/8/4/1 threads,
-diverging by step 30 (#11). numba schedules these 16 chunks onto however many threads
-exist, and the reduction below runs in partition order, so the output is identical
-everywhere. Costs nothing at 16 threads (1.92 vs 2.09 ms on the real connectome) and
-~1.3 ms/step at 8, where the 16 buffers are twice what the thread count would allocate.
+diverging by step 30 (#11). numba schedules these slices onto however many threads exist,
+and the reduction below runs in partition order, so the output is identical everywhere.
+
+Choosing the value trades two costs that move in opposite directions. `buf` below is
+(PARTITIONS, n) float32, allocated and zeroed *every step*, so that cost is fixed in
+PARTITIONS and paid whether or not anything fired; the scatter, in contrast, parallelises
+better the more slices there are, and its share of the step grows with how many neurons
+fired. A value below this one wins at the firing rate the network currently settles at and
+then crosses over to worse as activity rises — which is why the value is not chosen at the
+operating point. This one measured fastest or tied across the thread counts tried, and
+never worse than any other at any activity level tried (#10).
+
+That sweep ran where the thread count could exceed PARTITIONS, which starves the scatter
+phase; on hardware with many more cores than this value a larger one may well win again.
+Re-measure before assuming the choice transfers, and interleave the variants.
+
+Changing this value changes the spike train, and nothing pins it (#24) — anything that
+records a trajectory has to record PARTITIONS alongside the seed and the backend.
 """
 
 
 if numba is not None:
-    @numba.njit(nogil=True, parallel=True)  # cache=True warns "dynamic globals" — don't
+    @numba.njit(nogil=True, parallel=True, cache=True)
     def _propagate_numba(indptr, indices, data, fired, n):
         """Sum the CSC columns of the fired neurons into a dense current vector.
 
