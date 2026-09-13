@@ -8,8 +8,9 @@ Downloads the three flat-connectome Feather files published by Janelia, keeps th
 as a float32 CSC matrix (column j = all outgoing connections of neuron j, which is the
 access pattern both LIF kernels use).
 
-Never fabricates data: every failure path raises `ConnectomeError`. There is no mock
-brain, no random matrix, no zero-filled fallback.
+Never fabricates data: there is no mock brain, no random matrix, no zero-filled
+fallback. Every fault this module diagnoses raises `ConnectomeError`; one it does not —
+a socket error out of `urlopen` — propagates as itself rather than being papered over.
 
 CLI:  python -m src.brain.connectome [--data DIR] [--force]
 """
@@ -181,9 +182,14 @@ class BrainMeta:
                 raise ConnectomeError(
                     f"{path}: {key} has dtype {arr.dtype}, expected kind {kind!r}; {bad}")
         # The ordering this class documents as its contract. `_sanity` checks it when
-        # build() writes the file; nothing checked it when load() reads one back, and
-        # every downstream lookup is a np.searchsorted(ids, body_id) that answers
-        # silently wrong — not out of range, wrong — on unsorted ids (#20).
+        # build() writes the file; nothing checked it when load() reads one back (#20).
+        # It guards the contract rather than a present caller: no consumer of a loaded
+        # brain resolves a body id today — encoder, decoder, reward loop and server all
+        # select by mask over cell_type/superclass — and the one body-id lookup in the
+        # tree, `_edges`, runs on the build path over ids build() has just sorted. What
+        # makes the contract worth enforcing is that the lookup it implies,
+        # np.searchsorted(ids, body_id), answers silently wrong — not out of range,
+        # wrong — on unsorted ids.
         if n > 1 and not np.all(np.diff(ids) > 0):
             raise ConnectomeError(f"{path}: ids are not strictly increasing; {bad}")
 
@@ -279,9 +285,11 @@ def _open_nofollow(path: Path, *, append: bool):
       before the first HTTP request, so `urlopen(timeout=...)` never gets to apply.
 
     `O_NONBLOCK` turns the FIFO hang into ENXIO at the open (it has no effect on regular
-    files on macOS or Linux, so it is left set rather than cleared afterwards), and
-    `fstat` on the descriptor — not the path, so nothing can be swapped underneath it —
-    rejects the hardlink and any device node or socket planted there.
+    files on macOS or Linux, so it is left set rather than cleared afterwards). A socket
+    does not reach the checks below either — `os.open` itself refuses one, as it does a
+    directory. What does reach them is the hardlink and a device node, and `fstat` on the
+    descriptor — not the path, so nothing can be swapped underneath it — is what rejects
+    those.
 
     Truncation is deferred to an explicit `ftruncate` *after* that check instead of
     `O_TRUNC` in the flags: `O_TRUNC` fires inside `os.open`, so it would zero a
@@ -462,9 +470,10 @@ def _require(raw: Path, name: str) -> Path:
     and can be called without `download()`, against a hand-populated raw/, a shared
     cache, a Docker volume or a CI artifact. Whatever sits there otherwise goes straight
     into `feather.read_table` and `pa.ipc.open_file` (#19). That is the second half of
-    the #16 chain: an unverified Arrow IPC file parsed by a pyarrow version carrying an
-    arbitrary-code-execution advisory on IPC reads. Fixing either link breaks the chain;
-    both are cheap.
+    the #16 chain: an unverified Arrow IPC file, parsed by a pyarrow the requirements
+    floor did not hold above its published IPC-read advisories. #16 raised that floor, so
+    this check is now the redundant link rather than the only one — which is the point,
+    since the next parser advisory is not written yet.
 
     Cost: three sha256 passes over ~1.1 GB (~2-3 s) on every build(), including the
     main() path where download() just hashed the same bytes. That is against a build
@@ -532,10 +541,18 @@ def _invariants(W: sparse.csc_matrix, meta: BrainMeta) -> list[str]:
     These are the checks that do not assume the real connectome's scale, so a two-neuron
     matrix passes them too.
 
-    What they catch: rescaled weights, a synapse set to NaN or inf, a rewritten nt_sign.
-    What they do **not** catch, because none of it changes |w| or the sign vocabulary: a
-    matrix with its signs flipped, or one rewired to connect different neurons. Only a
-    pinned hash would, which is the open half of #20.
+    What they catch: a shape that disagrees with the metadata, a synapse set to NaN or
+    inf, an nt_sign outside {-1, +1}, and weights amplified past the normalisation — any
+    row whose |w| no longer sums to 1. Shuffling `indices` while leaving the weights in
+    place trips that last one as a side effect, by piling weights onto rows that then do
+    not normalise.
+
+    What they do **not** catch, because none of it raises a row sum or leaves the sign
+    vocabulary: weights *attenuated* — halved, scaled to a millionth, or zeroed outright,
+    which keeps the structure and drains the synaptic drive; a matrix with its signs
+    flipped; an nt_sign flipped wholesale but still in {-1, +1}; and a rewiring that
+    carries each (row, weight) pair to a different presynaptic column, which leaves every
+    row sum bit-identical. Only a pinned hash would, which is the open half of #20.
 
     `_sanity` and `load()` share this one implementation deliberately, rather than each
     reducing the row sums their own way: a cheaper reduction (`abs(W).sum(axis=1)`)
@@ -646,9 +663,10 @@ def load(data_dir: Path | None = None) -> tuple[sparse.csc_matrix, BrainMeta]:
     except ValueError as exc:
         raise ConnectomeError(f"{wpath} is corrupt ({exc}); delete it and run: {_BUILD_CMD}") from exc
     # Structure is not provenance. Nothing here authenticates the artifact — see #20 for
-    # why it is not hash-pinned the way SOURCES pins the raw downloads — but a matrix
-    # whose values no longer obey what build() guarantees is rejected rather than
-    # silently simulated. Costs a bincount over the nonzeros, once, at startup.
+    # why it is not hash-pinned the way SOURCES pins the raw downloads — and the checks
+    # are one-sided: they reject a matrix claiming more drive than build() would have
+    # written, not one claiming less. Read `_invariants` for the half they miss. Costs a
+    # bincount over the nonzeros, once, at startup.
     bad = _invariants(W, meta)
     if bad:
         raise ConnectomeError(

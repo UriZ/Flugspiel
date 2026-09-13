@@ -2302,3 +2302,453 @@ Commands: `PYTHONPATH=. python tools/spike/reward-substrate.py` (seconds, determ
 - [developer.md]: add — **when a change should provably NOT move a measurement, say so before re-running it.** Predicting that arms A and C would return bit-identical turned a re-measurement into an independent check of the scope claim at the rate level, which `--contract` only checks at the weight level. A prediction registered afterwards proves nothing; the same numbers, registered first, proved compartment independence.
 - [tl.md]: add — **when a ruling is reversed, the developer should publish the withdrawal of anything derived from the old one.** I had published a correction table telling a judge to read "≤ 8" as "≤ 7" throughout §4.2, §4.4 and R4. That table outlived its ruling by one comment and would have misled the judge worse than the original inconsistency.
 - [workflow]: five green lights for one three-line edit all crossed with my own messages, and the file had been free the whole time. The gate should key on the owning agent's *completion*, not on a round trip that races the thing it is gating.
+
+---
+### [2026-09-13 14:05] — judge — #4 (feature gate; covers #36)
+**Gate type**: final / feature (`GATE_FREQUENCY: feature`) — read every stage: two TL design comments, the three-part architect spec, developer notes `[1/2]`/`[2/2]`/`[3/3]`, the `encoder.py:202` correction comment, and `qa-6`'s 17-check report
+**Verdict**: **PASS**
+**Score**: 8/10 — threshold 7/10
+**Comment**: https://github.com/UriZ/Flugspiel/issues/4#issuecomment-5652741356
+**Gate boundary**: opened `8308774`, closed `f6497e6`. One commit landed mid-gate and touched no #4 path. **`ws_server.py` sha256 `af1941d8…` identical at open and after every measurement** — same hash QA reported, so every figure is attributable to one file version. Used port **8941** only; :8000 and :8099 untouched, port released at close.
+
+**All six ACs PASS on my own execution** against a real uvicorn started with the literal AC5 command. AC2 **p95 36.4 ms** (p50 33.4, max 41.5, n=200 at 20 missiles, loadavg 8.7). AC4 all five items, and the spike vector is genuine: **20,838 bytes = ceil(166700/8) exactly**, popcount 13,800–14,746 (8.3% firing), and **Σregions == popcount on 12/12 frames**. AC5 binds `127.0.0.1` IPv4 only by my own `lsof`. `ready` carries `prosthetic_sites: ['aim_bias_L','aim_bias_R']` — #3's disclosure reaching the wire.
+
+**#36 re-scoped — it is not a code defect.** Reproduced with a **control arm QA did not publish**: session held constant → **0/40 non-noop** (terminal, as specified); session 1→2 → **40/40 non-noop** (34 aim, 6 fire). Mechanism confirmed at `decoder.py:112` (`self.halted = False` sits outside the `if readout:` block). Reachability verified by execution, not read: after `detach()`, 600 frames produce **0 emits**, `session` frozen, `game.update` own-property gone, and a real `gameover → start()` leaves `session` unchanged. **But the spec already decided this in §4.3** ("`Decoder.reset()` also clears `halted`, and that is correct here… a detached bridge can produce no observed session change") — every clause of which my execution confirms — **while §3.4 of the same spec says `halted` clears "only" on a new connection or an explicit reset.** The code follows §4.3. So #36 is an **internal contradiction between two normative sections**, i.e. Architect criterion 11 (High), and should be re-scoped to "pick one section". My successor-bridge probe strengthens §4.3: a new `FlyBridge` on the same live `Game` yields session 1→2, and clearing `halted` there is the *desired* recovery outcome.
+- **My own error, recorded**: the first #36 run sent `result{seq}` where the frame carries **`ack_seq`**; the server correctly counted `stale_result`, `on_result` never ran, and I was measuring an un-halted decoder. Re-run with `ack_seq` plus a control.
+
+**Also ruled**: §7.2's "the shell stops sending states" is false — `status-bar.js:102` only sets status text; moot (0 emits from a detached bridge) but the doc claims a mechanism the code lacks, same class as #36. **`emitted` is not throughput** — confirmed at `ws_server.py:215-216` (`slot` + `credit = 1`, latest-wins), so anything keying on it reads rAF jitter as progress; carry to #7 before it keys reward on burstiness. **`populations.weapon = 6` is correct** — `('DNg100','MDN')` is a 2-element types list but 2+4 = 6 neurons; the spec example wrote the list length.
+
+**Confidence statement, recorded rather than implied**: `src/server/` has **never been code-reviewed and never been security-audited** (both user decisions). QA's pass was the only independent read this module had ever had; mine is the second. For a network listener that is a thinner base than #2 or #3 had. Offsetting it: QA's audit was genuinely adversarial, and I re-confirmed the two facts that bound the blast radius myself (listener is loopback-only; the frame serialiser reconciles exactly against an independent count). **AC6 has no persisted artifact** — behaviour verified three times, test never written; not scored, per the suspension.
+
+**Carried to #7**: `ws_server.py:307`'s `json.dumps(..., allow_nan=False)` is not wrapped in try/except unlike `_send`; a non-finite float kills the connection with a 1006 and no `error` (#26's shape). Unreachable from state input, **reachable if `reward.value` goes non-finite**.
+
+**Improvement Insights**:
+- [architect.md]: require a cross-reference pass on normative sections constraining the same state variable. §3.4 and §4.3 both legislate `halted` in different parts of a three-part spec; a single "what clears `halted`" table would have prevented #36 outright.
+- [criteria.md]: extend "comments state mechanisms the code has" beyond security code — §7.2 and §3.4 are the same defect class in a spec doc and nothing scores them.
+- [qa.md]: when a defect depends on a state transition, publish the **control arm**. 31/40 is only diagnostic beside the 0/40 with the session held constant.
+- [judge.md]: before measuring a protocol behaviour, echo one field of the server's own reply and assert it was accepted — my `seq`/`ack_seq` slip measured an un-halted decoder.
+- [workflow]: the pipeline should surface **which modules have had how many independent reads**, so a narrow base is visible at approval time rather than inferred from a judge's prose.
+
+---
+### [2026-09-13 13:35] — qa — #12, #13, #24
+**Task**: Independent verification of the `lif.py` cluster — eager param validation, NaN handling, and the trajectory fingerprint
+**Result**: PASS (3/3 issues verified) — 3 new issues filed
+**Issues verified**: #12 (PASS), #13 (PASS), #24 (PASS)
+**New bugs filed**: #37, #38, #39
+
+**Key findings**:
+- **#12: all fifteen invalid parameter sets were accepted before and are rejected now**, verified against a verbatim `a99ca9d~1` `lif.py` in a replica package. Pre-fix `threshold=0,v_reset=0` gives `fired/step=[3,3,3]` and `tau=-0.1` gives `decay=1.2214`, reproducing the issue exactly.
+- **The two passes of `__post_init__` are complementary and neither subsumes the other** — removing only the finiteness pass lets `tonic=nan`, `v_reset=-inf` and `gain=True` through; removing only the inequality pass lets `tau=-0.1`, `gain=-3.0` and `threshold<=v_reset` through. The developer's "tonic gets finiteness but no inequality" reasoning is exactly right.
+- **My first two determinism checks were vacuous and I caught both.** A 3-neuron zero-weight brain never fires, so both trajectories were trivially equal; then at `noise_hz=60` the noise probability is `noise_hz·dt = 1.2 > 1`, so every neuron is kicked every step and the RNG decides nothing. Re-run at p=0.500 on 400 neurons **with a control that seeds 64 and 65 must disagree**: pre-fix `seed=None` fails to reproduce across `reset()`, shipped rejects it at construction.
+- **#13's live half holds in the strong form.** #7's `_apply` guard sits between the clip and the write: with `magnitude=inf` (→ `inf·0 = nan`) and `magnitude=nan`, `RewardError` is raised **and** `W.data` is byte-identical over all 25.6M weights (`6af1f922b600721a` unchanged), with a control proving a finite event does write. `magnitude=1e300` writes but stays finite — `np.clip` *does* bound an infinity, so the weights saturate at `w_max`.
+- **Audited every write path into `W.data`, complete: three, all safe.** `_apply` (guarded), `_decay` (unguarded but provably safe — a non-finite wire clock is coerced by `_finite`, forces a resync and `dt=0.0`, so `a ∈ [0,1]` and the update is a convex combination), `reset()` (assigns `w0`, validated finite at construction).
+- **The "no per-step `isfinite(v)`" reasoning holds, and the bound is analytic, not empirical**: `(−gain + tonic)/(1 − decay) = −15.8` predicts the measured floor of −12.4711. Caveat recorded: the invariant now rests on three separate guarantees rather than one, so a fourth write path into `W` reopens the decision.
+- **#24: `PARTITIONS` is numba-only, confirmed twice** — numpy digests identical at P=1/8/16 (`f59b047e8c246806`) *and* `_propagate_numpy` structurally never mentions the constant. `--check` pins it at the CLI by exit code (8→16, 8→4, 8→1 all exit 1 naming both values), constants-only half costs **0.081 ms**, full check 2.2 s and green.
+- **Cross-backend divergence re-derived exactly**: onset step **31**, **288** at step 40, **4,901 (38.6%)** at step 60, cumulative **59,013**.
+- **#37 (filed): `connectome_digest`'s stored-index-order rationale is false.** Reversing within-column order moved **25,499,848 of 25,582,938** positions, changed the digest, and left the 60-step spike digest **bit-identical on both backends** with `v` identical to the last bit. In CSC the row indices within a column are distinct, so each buffer element is written once per column — the order dependence is *across* columns, i.e. `PARTITIONS`, already covered. Conservative and safe, but the docstring argues against canonicalising, which would be strictly better.
+- **#37 (second part): `--check --no-connectome` cannot see a default-seed change.** The default is written three times across two modules and `check_lock` rebuilds its side from `fingerprint.py`'s own literal. The full check catches it via the spike digest; the fast half does not.
+- **#38 (filed): `step()` is not atomic on a refused inject while `stimulate()` is.** A refused `step(inject=…)` leaves `v` advanced and the RNG one draw ahead with `steps` still 0; a caught-and-retried step gives `v[0]=0.254622` against `0.140000` for a single clean step. A determinism defect inside the determinism guarantee. Unreachable from any current caller — both inject sources audited clean.
+- **#39 (filed): 13 of 13 mutations survive `194 passed`.** With #32's 12 and #34's 9 that is **34 non-equivalent mutations across three clusters**, completing the picture: nothing written since the 2026-09-12 suspension has any regression protection. **No survivor here was redundant or equivalent**, unlike #34.
+- Suites: `tests/test_lif.py + test_connectome.py` **85 passed**; `-m "not realdata"` **194 passed, 11 deselected**. Zero skips. `src/` and `tests/` untouched by me; `developer-reward`'s concurrent edit to `reward.py` is confined to `_detect`'s phase gate and does not touch `_apply`, `_decay`, `reset` or the guard.
+
+**Improvement Insights**:
+- [qa.md]: add — **a determinism or RNG check needs a control that two different seeds disagree.** Two of my first three attempts were vacuous in opposite directions: a brain that never fires (both traces trivially equal) and `noise_hz·dt >= 1` (the RNG decides nothing because every neuron is kicked every step). Neither is visible in the result — both print `reproduces: True`, which is the answer you were hoping for. The control catches both in one line.
+- [qa.md]: add — **clear `__pycache__` and run with `python -B` before trusting any constants-edit result in a copied tree.** `gain: float = 3.0` → `3.5` is a *same-length* edit, so the .pyc stays valid on a coarse mtime and the edit silently does not take. That produced a clean false positive — "`--check` misses a `gain` change" — which I nearly filed. Same-length edits are the dangerous ones; `PARTITIONS = 8` → `16` changes the file size and invalidates correctly.
+- [qa.md]: add — **check that a mutation can actually fail before recording it as a survivor.** One of my 13 was `for idx, amount in (inject if False else inject)`, which changes nothing; it "survived" because it was a no-op. A mutation that cannot fail is a false coverage record in exactly the way a vacuous test is.
+- [developer.md]: add — **audit aliases, not just attribute writes, when claiming a write path is complete.** `grep 'W.data\['` finds three sites; the fourth and fifth are `data = self.brain.W.data` followed by `data[sel] = …`. #13's live half is genuinely closed, but only because I read `_decay` rather than trusting the grep.
+- [workflow]: the brief's "inherit, do not re-derive" on the 3,000-step NaN measurement was the right call and saved real time — but the *reasoning* behind an inherited number is still worth checking, and here it paid: the bound is analytic (`(−gain + tonic)/(1 − decay) = −15.8`) and predicts the measured −12.4711, which is a stronger claim than the measurement alone.
+
+---
+### [2026-09-13 17:40] — judge — #12, #13, #24
+**Gate type**: final (feature) — #12, #13 and #24 as one deliverable
+**Verdict**: **PASS**
+**Score**: 8/10 (threshold 7; `STRICTNESS: medium`, `GATE_MODE: blocking`)
+
+Gate boundary `dd31e381` → `dd31e381`. Pre- and post-gate assertion both clean: `git status
+--porcelain src/brain/ tests/ src/server/ src/viz/` **empty at both ends**, `git archive HEAD |
+tar -x` extracted and all seven measured files hashed identical before and after — `lif.py
+4b69765b`, `fingerprint.py 8036fbf5`, `reward.py db6addf3` (under a concurrent writer),
+`trajectory.lock.json 7ee85d77`, `connectome.py 6a9b9d3c`, `decoder.py 95f09def`, `encoder.py
+dbd3a9d9`. Freeze scoped by **loop, not file**: driving `RewardLoop._apply` on the real brain
+measures `reward.py`, `lif.py` and `connectome.py`, so all three were frozen. Every mutation ran in
+a scratchpad replica; `src/` was never written. Ports 8000/8099 untouched.
+
+**Everything below was re-derived. Nothing inherited.**
+
+- **#12: 15/15 invalid parameter sets rejected**, and the **two passes are complementary** —
+  confirmed by removing each in a replica. Without finiteness: `tonic=nan`, `v_reset=-inf`,
+  `gain=True` leak (and `dt='0.02'` degrades to a raw `TypeError`). Without the inequalities:
+  `tau=-0.1`, `gain=-3.0`, `threshold<=v_reset`, `dt=0.0` leak. Replica restored to `4b69765b…`.
+- **One over-rejection QA's "No over-rejection" claim missed**: `LIFParams(dt=np.float32(0.02))` is
+  rejected, because `np.float64` subclasses `float` and `np.float32` does not. Loud, clear message,
+  Low — but it is a real case and it was unreported.
+- **#13 live half, strong form, on the real brain** (25,582,938 weights): `magnitude=inf` and
+  `magnitude=nan` both raise `RewardError` and leave `W.data` **byte-identical** (`6af1f922…`), with
+  eligibility non-zero so `delta` was not trivially zero, and a positive control proving a finite
+  event writes.
+- **On the analytic floor**: `(−gain+tonic)/(1−decay) = −15.78` is a **bound**, not a prediction —
+  −12.4711 sits inside it. I raised the weight of QA's caveat rather than repeating it: the
+  invariant rests on three guarantees, a fourth `W.data` writer reopens #13, and the declined
+  per-step scan costs 0.83% of a step.
+- **#24 divergence, third independent measurement, matches to the unit**: onset step **31**, **288**
+  at 40, **4,901 (38.6%)** at 60, cumulative **59,013**; numba digest `8735699620ecf1f3` equals the
+  shipped lock.
+- **AC4's guard proven reachable at the production constant, both arms reported**: `P=8` → exit 0;
+  `P=1/4/16/32` → exit 1 naming both values. Full `--check` exit 0 in 2.66 s. `grep` confirms
+  **nothing invokes `--check` automatically** — the recorded limit is the actual behaviour.
+- **AC3 has no in-tree subject**: `src/viz/raster.js` is an in-memory scrolling display; nothing in
+  `src/viz/`, `src/server/` or `src/game/` writes a trajectory to disk. Mechanism + §5 contract is
+  the correct deliverable. `ready_message()` does not yet carry `fingerprint` (§5 downstream,
+  correctly deferred) — flagged for the TL.
+- Suite: **194 passed, 11 deselected, 0 skipped**. Skip list read and empty.
+
+**Rulings on the three filed issues**
+- **#37 — valid, Low, both items.** Reproduced: reversing within-column order moved 25,499,848 of
+  25,582,938 positions and changed the digest, spike digest **bit-identical on both backends**. The
+  digest is conservative and safe; the **docstring at `fingerprint.py:112-116` is what is wrong**.
+  Item 2 reproduced — a default-seed edit leaves `--check --no-connectome` at exit 0.
+- **#38 — valid, Low, and a regression introduced by `a99ca9d`.** Reproduced to the digit:
+  `v[0] 0.140000 → 0.254622`, RNG advanced, `steps` still 0. A determinism defect inside the
+  guarantee #12 exists to protect; it did not exist before the fix because there was no raise to
+  catch. `v` stays finite, so #13's invariant is untouched.
+- **#39 — NOT SCORED**, ruled explicitly. Its remedy is a test; `criteria.md:80` suspends that
+  obligation; scoring it under D8 would re-impose a suspended obligation through another row (same
+  reasoning as #2 and #3). **Cost stated**: 34 non-equivalent unprotected mutations across
+  #32/#34/#39, five of them on #24's own mechanisms — including one that makes a fingerprint report
+  a seed-7 brain as seed 64, i.e. AC1's exact original failure, with a green suite.
+
+**Key gap (the reason this is 8, not 9)**: **`src/brain/lif.py:149`** still reads "Changing this
+value changes the spike train, and **nothing pins it (#24)**". It is pinned — that is AC4, proven at
+five values. The line sits in `PARTITIONS`' own docstring: the text a developer reads at the moment
+they edit the constant, and the only remaining human path to `--check`. criteria.md **D10**, and a
+near miss on the Security row 7 second-appearance rule — `10dc238` existed to remove a false claim
+from this file and left this one standing 40 lines above. One-line follow-up before merge, not a
+backlog item.
+
+**Independent-read counts** (requested by the TL for adoption at approval time): `lif.py` whole-file
+across the #1 era had **~6**; **the #12/#13/#24 changes to `lif.py` have 2** (QA, this gate);
+**`fingerprint.py`'s 311 new lines have 2** (QA, this gate) with **zero tests and no independent
+read of the design at all** — the architect posted a skeleton and was killed, so the developer
+authored the design, the code and the tradeoff calls. Both reads were deep and agreed to the unit.
+Two is still the number.
+
+**Improvement Insights**:
+- [criteria.md]: row **D8** ("normative behaviour is test-pinned") needs the same explicit
+  `SUSPENDED` marker row D4 carries. As written its only remedy is a test, so every judge must
+  re-derive that D4's suspension implies D8's. Three gates have now spent words on this.
+- [criteria.md]: add a row for **stale comments in the changed file**. D10 covers "the amendment did
+  not land at the call site"; it does not cover "a comment elsewhere in the same file now asserts
+  the opposite of what shipped". That is exactly `lif.py:149`, and it was missed by the developer,
+  by QA, and by the commit whose purpose was fixing the same class of defect in the same file.
+- [qa.md]: an over-rejection sweep must include **numpy scalar types**, not just boundary floats.
+  `np.float64` passes `isinstance(x, float)` and `np.float32` does not — a trap that recurs anywhere
+  this project validates a parameter with `isinstance`.
+- [judge.md]: **disable bytecode caching when mutating a replica**, and print the value the module
+  actually sees on every arm. `.pyc` invalidation keys on mtime-in-seconds plus size, so two
+  equal-length edits inside one second reuse the stale module. It corrupted two arms of my first
+  `PARTITIONS` run (`P=1` reported as `-> 4`). **`qa` independently hit and logged this same trap on
+  the same cluster** — two agents losing time to it in one feature is enough to make it a rule.
+- [workflow]: when an architect does not complete, the design comment should get an **independent
+  read before implementation**, even when the implementer wrote it. #24's output was unusually good,
+  so this is not a complaint about the result — it is that the design had zero independent reads,
+  and with code review and security disabled the whole feature reached the gate on two.
+
+---
+### [2026-09-13 17:55] — qa — #6
+**Task**: QA the brain visualization panel — first independent read (no code review, no security stage, testing suspended)
+**Result**: PASS (7 bugs found: 0 critical, 0 high, 3 medium, 4 low)
+**Issues verified**: #6 (PASS — all 6 ACs met, all 6 honesty gates hold)
+**New bugs filed**: #42, #43, #44, #45
+**Key findings**:
+- **#42 (Medium)** — raster `GAP = 250` sentinel shares the value space with real cell values. A class firing at 39.14–39.29% of its population renders in the gap colour ("no data arrived") instead of near-maximum activity. All 13 rows affected; `descending_neuron` at 515–516/1,314 is the output path.
+- **#43 (Medium)** — `panel.js:467` stall catch-up loop is unbounded. Measured with a virtual clock (first probe was vacuous — `render(now)` ignores its argument for that loop): 30 s gap → 513 ms, 600 s gap → **10,593 ms** of main-thread block in one `render()`. Panel and game share the thread. >99.9% of the work is provably redundant (ring is 561 cols, decay floors at 16).
+- **#44 (Medium)** — below 420 px the VNC inset draws neither title nor scale bar; two panes at different scales with only one declared, against §3.2 and §10.2 rule 6.
+- **#45 (Low)** — cumulative trace never labelled; `fire.enabled` ignored by the generator (proven non-equivalent — loader accepts it, decoder honours it, while `aim.enabled` is *rejected* so its hardcoding is correct); absent reward block renders as "loop running"; `ready.prosthetic_sites: []` false-flagged.
+- **All 6 honesty gates PASS**: 9/9 reward routing shapes correct incl. the previously-buggy `{source:'disabled',enabled:true}`; `unimplemented` vs `disabled` distinct in pixels not just words; `prosthetic_sites: []` flagged red; WEAPON/BIAS show `no readout` at all 10 sizes; zero forbidden words across 10 sizes × 7 states; spikes/s = `popcount × meta.sim_hz` exactly.
+- **AC6 passes for the right structural reason**: accumulator cost 1.5 ms at 0.5% firing → 2.5 ms at 99% — **198× the lit neurons for 1.67× the cost**. Not the `cachedbg-lit-2d` trap (which went 2.70 → 34.00 ms for a 6× burst). Measured round-robin under loadavg 14.20 on 8 physical cores; absolute ms contaminated, the ratio is load-immune.
+- Artifact **byte-reproducible** (rebuild sha256 == shipped); `dn_slot` == `ws_server.py`'s own `flatnonzero`; 0 of 463 DN types have an L/R column mismatch; decay floors exactly at frame 16 with 0 of 946,836 px differing.
+- Baselines re-run clean: **JS 38 passed / 0 skipped**, **pytest 194 passed / 11 deselected / 0 skipped**. All 16 #6 files sha256 byte-identical before, after, and after the 42 mid-run commits.
+- **Coverage gap**: `src/viz/` has zero automated tests (1,779 lines) — user-suspended, but #42 and #43 are exactly what a test would hold.
+
+**Improvement Insights**:
+- [qa.md]: add — "a probe that passes a clock value into a render/tick function must confirm the function actually reads that parameter." My stall probe passed a future `now` to `render(now)`, but the catch-up loop reads `performance.now()` directly; every gap cost a flat ~7 ms and the bug looked absent. This is a new vacuity mode distinct from the three already listed: the control was present but wired to the wrong clock.
+- [qa.md]: add — "instrument `ctx.fillText` before QAing a canvas UI." One wrapper turned every text-honesty question (forbidden words, `no readout`, missing labels, truncation) into a string-set assertion across 10 sizes × 7 states, and found #45's missing `cumulative` label that no screenshot read would have caught.
+- [workflow]: `.venv/bin/pytest` is required — bare `python3 -m pytest` fails with "No module named pytest", and `timeout` does not exist on this macOS. Both cost a cycle; worth a line in CLAUDE.md's test section.
+- [workflow]: the TL's brief named the baselines (`npm test` 38/0, `pytest -m "not realdata"` 194/11) up front. Both matched exactly, which made "no regression" a one-line claim instead of an investigation. Keep doing this.
+
+---
+### [2026-09-13 18:15] — qa — #35, #31, #33
+**Task**: QA the decoder/encoder/connectome fixes — sole independent read (code review and security disabled, testing suspended)
+**Result**: PASS (3 bugs found: 0 critical, 0 high, 0 medium, 3 low — 2 findings + 1 test-debt cluster)
+**Issues verified**: #35 (PASS), #31 (PASS), #33 (PASS)
+**New bugs filed**: #46 (test debt). Two Low findings reported on #35 rather than split into issues — both are about #35's own audit.
+**Key findings**:
+- **#35 PASS.** Pre-fix arm extracted with `git show 47080a9^:path` via `subprocess`; "it raised" and "it did not write" verified as separate columns and both flip. **Broader than reported**: a *single* infinite rate also NaNs (`inf/inf`) — the issue and fix comment both name only two infinities. The crosshair guard is **proven non-equivalent** via a route independent of `_index()`, so guarding it separately was load-bearing, not belt-and-braces.
+- **Encoder audit re-derived, not inherited**: **91 combinations** (vs the developer's 27), zero non-finite in any output field. **Non-vacuity control: `rejected` totalled 975 and was non-zero in every frame** — the hostile values provably reached the coercers. `reward.py:420`'s exclusion verified warranted (its clip *is* followed by an `isfinite` check before the write).
+- **#31 PASS.** Developer's table reproduces byte-for-byte, but **only at `dt = 0.06`** — at `dt = 0.05` fire spacing is 7 ticks and tick 6 carries no fire, so the arms look identical. Swept the rejection across all 14 positions instead of checking one row: the fix acts at **2 of 14** (tick 6 **and tick 11**, which the issue's table did not reach), the other 12 identical.
+- **#31 dead branch re-derived and instrumented**: 1,210,000 decode ticks, 0 differences, but the branch was **entered 211,874× with a non-zero charge to clear in 92,534 of them**. That turns an absence of evidence into a real equivalence proof. Classified **EQUIVALENT — not a hole**.
+- **#33 PASS, complete.** 4 mentions → 3, all three now *negate* the flag. Mechanism asserted **on the victim, not the error message**: hardlinked victim **2,403 → 2,403 bytes, sha256/mtime/ctime unchanged**, snapshot taken *after* planting because `os.link` bumps ctime itself.
+- **#46 — 5 non-equivalent mutations survive 109/109 green**, on a replica baseline **asserted GREEN first**, every mutant asserted to *apply*, `python -B` + cleared `__pycache__`, and a **control (C0, laterality sign flip) that went red at 7 failed** proving the harness works. Restore proven: 19 files `drifted=none`, post-battery GREEN.
+- **Finding 1 (Low)**: `_command()` clips `self._index() - zero` — the fix guards the index, `aim_zero` is the *other* operand and the same class of public mutable state. Config route is closed (`_num` rejects non-finite). Blast radius **measured before assigning severity**: action frame never corrupted (the crosshair guard holds), telemetry only. Makes the stated residual **incomplete** — the real unguarded set is `fire_hz`, `weapon_hz`, `aim_zero`, `aim_cmd`.
+- **`dd31e38` post-dates the #35 fix and downgrades its own residual**: `ws_server.py:321-331` now catches the `ValueError`, names the field via `_nonfinite()` and drops the frame. Consequence is no longer session-death.
+- **Finding 2 (Low, latent)**: `loom()` is the unguarded sibling of `column()` — same module, same public-helper status, same reachability, opposite treatment; `np.maximum` propagates NaN like `np.clip`. The guarded one failed **loudly** (`IndexError`), the unguarded one fails **silently** (`nan`). Contained downstream either way.
+- **Ran the 11 `realdata` tests every prior report on these issues excluded** — the built connectome *is* present, so they were deselected by choice. **11 passed in 345.6s.** True coverage is **205 passed, 0 skipped**.
+- Baselines reproduced exactly: **109 / 167 / 194 passed, 11 deselected, zero skips**. All four source files **byte-identical before and after every run**; `git status --short src tests` empty. 8 physical cores, loadavg 6.3 → 16.9.
+
+**Improvement Insights**:
+- [qa.md]: add — "when reproducing another agent's measured table, sweep the free parameter before concluding the fix does nothing." My first #31 reproduction used `dt = 0.05` and showed **zero difference between arms at the tick the issue names** — a false "fix is a no-op" that looked exactly like a real finding. The developer's rows were right; my `dt` was wrong. Sweeping `dt` found `0.06` and reproduced them byte-for-byte. This is the mirror of the existing vacuity rules: a *negative* result about someone else's *positive* claim needs its own control.
+- [qa.md]: add — "instrument a dead-branch equivalence proof with an entry counter." The existing rule says to prove a survivor non-equivalent; the converse needs proof too. `0 differences` is worthless if the branch never ran. Counting entries (211,874) *and* entries with something to clear (92,534) is what upgraded "no difference observed" to "does real work and still changes nothing".
+- [qa.md]: add to the clip/guard family — "when a guard is added to an expression, enumerate **every operand**, not the one named in the issue." `_index() - zero` had two; the issue named one; the other is the same class of public mutable state and was missed by the audit, by the residual note, and nearly by me.
+- [workflow]: the brief named the three baselines and they matched exactly — same value as on #6, keep doing it. But it also named commits (`47080a9`, `1227cc9`, `8308774`, `f6497e6`) that were **no longer HEAD** — two further commits had landed, one of which (`dd31e38`) materially changes #35's session-death conclusion. Briefs should say "HEAD at dispatch was X" so the agent knows to diff, rather than implying the tree is static.
+- [CLAUDE.md]: the `-m "not realdata"` baseline is quoted as *the* suite in every report on these issues, but the connectome is present and those 11 tests pass. A deselected test is zero coverage exactly as a skipped one is. Worth stating that `realdata` must be run, or explicitly justified as skipped, whenever `data/weights.npz` exists.
+
+---
+### [2026-09-13 18:55] — judge — #20, #21
+**Gate type**: final (feature) — #20 and #21 as one deliverable (connectome artifact integrity)
+**Verdict**: **PASS**
+**Score**: 8/10 (threshold 7; `STRICTNESS: medium`, `GATE_MODE: blocking`)
+
+Boundary `dd31e381` → `dd31e381`. **Pre-gate assertion run twice** — at open, and again on resume
+after the machine slept — plus once at close. `git status --porcelain src/brain/ tests/
+src/server/` empty all three times; `git archive HEAD | tar -x` extracted and matched.
+`connectome.py 6a9b9d3c`, `test_connectome.py 2881ff67`, `lif.py 4b69765b`, `reward.py db6addf3`
+byte-identical at every checkpoint, **including `connectome.py` under `qa-decoder`'s concurrent
+read-only access** — no drift, nothing needed freezing. Replicas extracted with `git show`; `src/`
+never written. Posted a **skeleton to #21 first**, then FINAL — the TL's call after the sleep, and
+it was right: boundary, method and verified facts survived the interruption at zero cost.
+
+**Everything re-derived. Two QA passes read in full; no figure inherited.**
+
+- **#21's ordering trap, isolated — the result that matters.** `O_TRUNC` restored to the flags with
+  the `S_ISREG`/`st_nlink` check **fully intact**: hardlink still **REFUSED with the correct
+  message**, victim still **zeroed 2700 → 0 B**, mtime and ctime bumped. So a REFUSED verdict proves
+  nothing on its own — what saves the victim is the **deferred `ftruncate`**, not the `fstat`. The
+  issue's own sketch keeps `O_TRUNC` and would have shipped the zeroing.
+- **Shipped**: hardlink, symlink, FIFO, socket, `/dev/null` symlink and directory all refused on
+  both append modes, victim **SAME on content, length, mtime and ctime** (baseline snapshotted after
+  planting, so `os.link`'s own ctime bump is excluded). **Pre-fix (`c533e1a~1`)**: hardlink
+  ACCEPTED, 2700 → **1250 B attacker bytes** (append=False) and → **3950 B** (append=True).
+- **FIFO both arms by subprocess returncode**: pre-fix SIGKILL at 12.01 s; shipped rc 0 in 1.13 s;
+  **shipped minus `O_NONBLOCK` only** SIGKILL at 12.01 s — the flag is load-bearing in isolation.
+- **`O_EXCL` absent** (one docstring hit, no code use); both restart tests pass; fresh and stale
+  `.part` accepted on both modes. AC5 messages name path and remedy, verbatim.
+- **#20**: worst row `|w|` = `1.0000000558793545` vs `1.00001`; float32 shortcut `1.0000441074371338`
+  — **really would reject the artifact `build()` just wrote**. `load()` wiring proven **in both
+  arms**: replacing `bad = _invariants(W, meta)` with `bad = []` makes a NaN artifact ACCEPTED.
+- **QA's rewire correction confirmed** on the full matrix: shuffling `indices` alone REFUSED (row
+  `|w|` = **74.9931929387958**); permuting **(row, weight) pairs** ACCEPTED. **×0.5, ×1e-9 and → 0
+  all ACCEPTED** — the invariant is one-sided.
+- **Cost, and a correction to QA pass 1**: interleaved vs a verbatim `6bbb57e~1` replica at loadavg
+  19.8 → 0.445 s → 1.455 s, **3.27×**. The **ratio** reproduces (3.3×/3.4×); the **delta does not**
+  (+1.009 s vs +0.391/+0.523 s at loadavg 5.8). Pass 1 called the delta load-robust; it is not —
+  a `bincount` over 25.6M nonzeros is CPU-bound, so the delta scales with contention. Pass 2 got it
+  right by reporting both columns.
+- Suites: `-m "not realdata"` **194 passed, 11 deselected, 0 skipped**; `tests/test_connectome.py`
+  **58 passed, 0 skipped**; `npm test` **38 pass, 0 skipped**. Skip lists read and empty.
+
+**Row 11 applied whole-file (its first use).** The `O_TRUNC` sweep is **clean** — all three
+surviving mentions correctly describe the flag's *absence*, and `:287` is true as the TL said, not a
+miss. `#33` discharged. **One finding: `connectome.py:535`**, the docstring of `_invariants` —
+*"What they catch: rescaled weights…"* — when `w → 0.5w` is a rescale and is accepted, and the
+paired "do not catch" line omits attenuation. QA pass 2 flagged this omission **in the commit
+message**; the **docstring** was never corrected and nobody flagged it. **Escalates under row 11**:
+third round of wrong-comment defects in this file after `8f28fb3` and #33.
+
+**Key gaps**: D11 FAIL (`connectome.py:535`, must-fix); Q6 PARTIAL (developer's `.venv`, not a clean
+env — but better mitigated than last gate: the interpreter was named and checked against
+`architecture.md`'s 3.12+ minimum, and both passes reported zero skips).
+
+**Independent-read counts**: `connectome.py` whole-file across #1/#15–#19 ≈ **8**; **the #20/#21
+changes: 3** (QA pass 1, `qa-5`, this gate); **the #21 *design*: 1** — the TL's `O_EXCL` warning,
+which killed a defect in the issue's own prescribed fix before a line was written. Better covered
+than #12/#13/#24 (2 and 0), and the design read is why.
+
+**#34 reported, not scored** (D8 now explicitly SUSPENDED — my own prior insight, applied, and it
+saved a fourth re-derivation). Two survivors reproduced directly. Its clearest finding restated:
+`connectome.py` now carries **both sides of the 2026-09-12 line in one file** — #18's `O_NOFOLLOW`
+and #17's two aborts are each killed by a named test; every guard in `6bbb57e`/`c533e1a` by nothing.
+
+**Improvement Insights**:
+- [criteria.md]: row 11's escalation says *"must-fix on a second appearance in the same file"* but
+  gives no way to count appearances across **different claims**. `connectome.py` has had three
+  rounds about three different mechanisms. Suggest the trigger become *"a second round of comment
+  defects in the same file, regardless of whether it is the same claim"*, and that the remedy at
+  that point be a **whole-file claim audit** rather than another point fix — point fixes have now
+  failed three times in this file.
+- [qa.md]: when classifying a timing figure as load-robust, state **which** of ratio and delta is
+  robust and why. Pass 1 called a CPU-bound delta robust and it moved 2.6× under load; pass 2 got it
+  right by reporting both columns. Make that the rule.
+- [qa.md / judge.md]: record **what could not be executed and why**, not only what was. All three of
+  us covered #21's device-node AC by construction because `mknod` needs root, and none of the three
+  reports said so plainly — it reads as though a device node was planted and refused.
+- [workflow]: the TL's pre-implementation `O_EXCL` warning is the highest-value artefact in this
+  gate — it killed a defect in the issue's **own prescribed fix** before a line was written, and it
+  is exactly what #24 lacked. Make it a rule: **when an issue body prescribes a specific fix, that
+  prescription gets an independent read before implementation, the same as a spec.**
+- [judge.md]: post the gate skeleton first. Re-asserting the hashes on resume is what proved the
+  freeze held *across* the interruption, which a single end-of-run assertion could not have shown.
+
+---
+### [2026-09-13 18:20] — architect — #40
+**Task**: Decide by measurement whether the fly can aim; AC1 decodability, AC2 DN sweep, AC3 trained readout, AC4 dimensionality
+**Result**: COMPLETED — 8 comments on #40, last marked FINAL
+
+**Environment for every measurement below**: 8 physical / 16 logical cores, loadavg 9–22
+(four concurrent agents), `.venv/bin/python` 3.13, backend `numba`, brain seed 64,
+`data/weights.npz` 166,700 × 166,700, nnz 25,582,938. Dates 2026-09-13. Wall times are
+load-sensitive; every R², rate and share below is deterministic and is not.
+
+**Probes promoted to `tools/spike/`** (each carries its command and expected output shape in
+the module docstring; no measured values in any docstring or comment):
+- `tools/spike/aim-decodability.py` — AC1: dual-form ridge azimuth decode over all 166,700
+  features, 8 ablation conditions × 7 population sets, 20-shuffle null, participation ratio.
+- `tools/spike/dn-laterality.py` — AC2: all 1,314 DNs ranked by Cohen's d under left/right
+  looming, with a **selection-corrected** null (max |d| over DNs under permuted labels).
+- `tools/spike/state-dimensionality.py` — AC4: PR sweep over T, KC saturation,
+  stimulus-locked variance fraction per population.
+- `tools/spike/retinotopic-loom.py` — follow-up: per-column looming injection into
+  LC4/LPLC2, drive-matched, with a random-tiling control.
+- `tools/spike/aim-readout-fit.py` — AC3: EMA-trace ridge readout, contiguous temporal
+  holdout + cross-seed test + feature-count sweep.
+
+**Headline measurements**
+- **AC1**: azimuth from the descending population, held-out R² = **0.7058** (N=900, +208 sd)
+  with both channels and **0.7057** with the retina switched off — identical. Side-only
+  ceiling is exactly **0.7500** (simulated). Within one hemifield the DN layer is at
+  **−0.006 (chance)** while the photoreceptors still decode at **0.9336**.
+- **x10 retina gain**: photoreceptors 0.9907, `ol_intrinsic` **−0.0061 (chance)**, DN +0.0022.
+  The failure is not amplitude.
+- **Mechanism**: L1 draws 26.5% of input from photoreceptors, is **inhibited** by them, and
+  sits at 0.58 Hz undriven → 0.27 Hz at shipped gain → 0.20 Hz at ×10. The shadow moves L1
+  by ~0.08 Hz = **0.013 spikes per 0.16 s readout window**. The lamina is rectified against
+  the floor.
+- **AC2**: selection ceiling p99 = **0.927** (500 permuted labellings, max |d| over 1,314).
+  **56 of 1,314 DNs clear it.** Top: DNp02-L d=+28.28 (16.75 vs 0.08 Hz), DNp04-R d=−13.44
+  (0.00 vs 31.25 Hz). **DNa02 — the shipped aim readout — max |d| = 0.413, below the
+  ceiling, 0.92 Hz on both sides.** DNg100 silent (0.00 Hz).
+- **AC4**: PR = 159.6 / 294.4 / 547.3 / **977.2** at T = 250/500/1000/2000 — grows at ≈0.49·T,
+  never saturates. **The "no effective dimensionality" hypothesis is refuted.** KC saturation
+  confirmed: **100.0% firing per step, 4,063 of 4,064 on every one of 2,000 steps**, median KC
+  stimulus-locked variance fraction **0.0000**. KC→KC 0.5599 / APL→KC 0.0931 (both from `W`).
+- **Connectivity from `W`**: DNa02 ← LC4/LPLC2 = **0.000**; DNp04 = **0.724/0.698**, DNp01 =
+  0.311/0.299. **63 of 1,314 DNs** receive LC4/LPLC2 input; **2 of 1,314** receive any direct
+  photoreceptor input. PFL3→DNa02 = **0.0157/0.0149**; LC4/LPLC2→PFL3 = **0.0000**.
+
+**Two errors of my own, both caught and both kept as gotchas**
+1. The participation ratio I first posted (90.8) is **capped by the sample count** — the same
+   brain reads 190.2 at 900 trials and 977.2 at 2,000 steps. A PR without its sample count is
+   meaningless. Corrected in the AC4 comment; the probe now prints the sweep.
+2. My first retinotopic-injection run reported the DN layer at chance and was **my probe
+   under-driving it**: injection sum 4.9 vs the shipped site's 49.5, DN rates 0.25–2.50 Hz vs
+   7–14 Hz. Re-run drive-matched, with a random-tiling arm added so a negative result cannot
+   be confused with a wrong column map.
+
+**The answer, and it changed mid-run**
+- **The fly CAN aim, and both things stopping it are ours.** (1) The readout was wired to
+  **DNa02, which carries no side information at all** (AC2: |d| 0.413 vs a 0.927 selection
+  ceiling, 0.92 Hz on both sides) while **56 of 1,314 DNs clear that ceiling**, the best at
+  a 200:1 rate ratio. (2) The encoder gives the only DN-reaching visual channel **two
+  scalars**, destroying azimuth before the brain sees it.
+- **Side-aware arbitrary azimuth code over LC4/LPLC2 is the recommendation**: full-field DN
+  R² **0.7459** (vs shipped 0.7018, side-only ceiling 0.7500) **and** within-hemifield
+  **0.1489** (vs shipped **−0.0061, chance**). The only arm that beats shipped on both axes,
+  and it **beats the PFL3 prosthesis at the prosthesis's own job** (0.1489 vs 0.1088) with
+  nothing bypassed.
+- **The two encodings interfere, they do not add.** Scalar + code at half strength each
+  collapses within-hemifield R² from 0.4163 (code alone) to **0.0542**. Both cues must come
+  from one site. This is the measurement that produced the design.
+- **Trained readout generalises**: temporal holdout **0.6016**, **cross-seed 0.6453**
+  (higher than the holdout), shuffled-label **−0.0122**, hemifield accuracy **0.9492 /
+  0.9573**. **K=2 is as good as K=1,314**, and its two neurons are **DNp04-L/R** — the pair
+  AC2 independently ranked 4th and 7th. Spec settles on **K=64** for robustness (within
+  0.002 of the best cell).
+- **AC4's dynamics hypothesis is refuted** and **#29 is not upstream of #40**: the
+  LC4/LPLC2→DN path does not route through the mushroom body.
+
+**Three of my own errors, all caught, all kept in the spec as gotchas**
+1. **Participation ratio is sample-capped.** I posted 90.8; the same brain reads 190.2 at
+   900 trials and 977.2 at 2,000 steps. Corrected on the issue; the probe now prints the
+   sweep so the cap cannot be mistaken for a result again.
+2. **My retinotopic probe under-drove the brain and produced a clean false negative.**
+   Injection sum **4.9** vs the shipped site's **49.5**; DN rates **0.25–2.50 Hz** vs
+   **7–14 Hz**. The correct answer was the *opposite* of what the buggy run said. Drive
+   matching and the normalising formula are now in the probe and in the spec.
+3. **A random column tiling beat the anatomical hex vote** (0.4163 vs 0.2612 within a
+   hemifield), so the spec does **not** claim retinotopy and requires the arbitrary basis to
+   be seeded and disclosed via a new `EncodedFrame.coded_sites` field.
+
+**Disclosed as not measured**: the `addon_hemi` cell (scalar at full gain + code on top) —
+that run was killed after `addon_full` = 0.6493 to free the machine. Its exclusion is an
+inference from the half-strength interference result, not a measurement.
+
+**Not re-measured, inherited and cited as prior art**: the 0.671 / 0.945 aim-error ratios
+and the 0→40→108→168 shots/min figures (both need the game harness, which I did not run).
+
+**Next label**: `developer`. Not relabelled by me.
+
+**Improvement Insights**:
+- [architect.md]: add — **when an arm of your own experiment produces a null, check that the
+  manipulation actually reached the readout population before reporting it.** My retinotopic
+  arm read "chance" at the DNs purely because it delivered 10x less current than the arm it
+  was compared against. The existing rule ("a probe that FAILs is not automatically a
+  finding") covers a *failing* probe; this was a probe that ran clean and returned the wrong
+  answer. The generalisation is: **a between-condition comparison must equalise the thing
+  you are not testing**, and the cheapest check is to print the readout population's firing
+  rate in every arm.
+- [architect.md]: add — **a participation ratio, an effective dimensionality or any spectral
+  measure is capped by the sample count and must never be quoted without it.** One brain
+  produced 90.8, 190.2 and 977.2 in this session. Require the sweep, not the value.
+- [architect.md]: add — **before designing on an anatomical assignment, run the assignment
+  method on data where the answer is known.** The presynaptic hex vote recovers a
+  hex-carrying neuron's own value at corr +1.000 / 99.8% exact, which is what made it worth
+  trying — and a random tiling still beat it, which is what stopped me claiming retinotopy.
+  Both halves were cheap and both were load-bearing.
+- [CLAUDE.md]: add to the concurrency note — **agents must report loadavg with any wall-time
+  figure and must not launch more than two heavy jobs at once.** Loadavg reached 29.8 on a
+  16-logical-core box with five agents running; a 25,000-step recording took 401 s that
+  takes ~70 s idle, and one of my probes was killed outright with an empty log. Deterministic
+  results were unaffected; throughput was not.
+- [workflow]: the skeleton-first rule paid for itself again — **eight comments, nothing held
+  in context, and the answer inverted at comment seven.** Had I written one spec at the end,
+  the version that survived would have been the wrong one.
+
+---
+### [2026-09-13 18:45] — developer — #7
+**Task**: Re-run the AC7 shuffle-control battery after the `b43fe20` phase-gate fix, and honour the prior agent's pre-registered prediction that nothing should move
+**Result**: COMPLETED
+**Files changed**: `SESSION_LOG.md` only — **no source change**. `src/brain/reward.py` `8183b435…`, `lif.py` `e343cb5b…`, `fingerprint.py` `b8e7d2c8…`, `tools/spike/reward-shuffle.py` `2e154c66…`, identical before and after the run; `git status src/ tools/ tests/` clean of any edit of mine.
+
+**Key changes**: none. This was a verification pass on `dd31e38`.
+
+**Testing**:
+- **AC7 arms battery, session 5** (36 s, 7 losses, 9 events 3R/6P, 1,817 steps/arm): A **242.30 ± 0.27**, B **242.40 ± 0.22**, C **246.17 ± 0.17**. H1 TRUE (3.87) · H2 FALSE (0.10) · H3 FALSE (0.07). DNp01: A 17.63 ± 0.52, B 17.73 ± 0.42, C 17.70 ± 0.32.
+- **AC7 arms battery, session 0** (300 s stalled, 6 losses, 10 events 4R/6P, 15,000 steps/arm): A **244.67 ± 0.72**, B **244.93 ± 0.53**, C **245.97 ± 0.41**. H1 FALSE (1.30) · H2 FALSE (0.27) · H3 FALSE (0.10). DNp01: A 17.57 ± 0.25, B 17.53 ± 0.22, C 17.67 ± 0.29.
+- **Every figure is bit-identical to the pre-`b43fe20` run, per seed and not merely in the mean** — which is what the prior agent predicted in advance, on the grounds that `wire()` synthesises every state as `phase: "playing"` so the replay never takes the phase gate. It is a scope test, not a re-measurement, and it passed.
+- **AC3(iii)**: `min w/w0` **0.8240** (s5) / **0.8261** (s0), both inside §5.6's 0.799–0.854, identical across all five seeds for arm A and seed-varying for arm B (s5: 0.8557 / 0.8829 / 0.8250 / 0.8235 / 0.8235) — correct, since only arm B's interval permutation is seeded. Min-window rates against the 241.2–242.8 band: s5 242.33 / 242.00 / 242.67 / 242.33 / **243.00** (4 of 5); s0 242.00 / **243.00** / **243.00** / 242.17 / **243.33** (2 of 5). **The four misses are reported rather than rounded**; they sit 0.2–0.5 Hz above the band, the width of a 300-step window's own sampling noise. `lr = 0.03` untouched.
+- **The s0 H1 null is reported alongside the s5 TRUE, deliberately.** With `tau_decay = 300 s`, a session that stalls 250 s after its last loss has largely recovered by the tail (end `w/w0` ≈ 0.93 against ≈ 0.83 at the minimum), so §9.2's statistic measures recovery, not the update. Headline statistic is the trajectory minimum (TL); on that, the effect is present and on-prediction in both sessions.
+- **Phase gate (`b43fe20`) — four cases against the REAL `src.brain.reward`**, not the commit's scratch replica, on a synthetic brain carrying the compartments' cell types, states at 20 Hz: **A** uninterrupted → reward 5.00; **B** 3 s play / 10 s paused / resume 13.00 → **reward 17.95**, paused seconds contribute 0.00; **C** 20× pause/unpause after a collected reward → **exactly 1**; **D** punishment re-arms → punish 3.00, reward 8.00, punish 12.00, unchanged.
+- **Counterfactual, so the probe is not vacuously green**: the same four scripts against a verbatim `b43fe20^` `reward.py` loaded from a scratch copy (tree never mutated) give A `[(5.0,'reward')]`, **B `[]`**, C `[(5.0,'reward')]`, D unchanged. **Exactly one row moves** — the fix's entire footprint. Case C reads 1 on both modules, so it is a guard-rail against the *rejected* fix (`armed = True`, which would re-arm a spent one-shot and make the payout farmable by pausing), not a discriminator for this one.
+- Collected set, zero skips: `pytest -m "not realdata" -ra` → **194 passed, 11 deselected, 0 skipped** (17.81 s); `--contract` → **12 PASS, 0 FAIL**; `--direction` → PASS, reward 1.0297 / punish 0.9703, each compartment moving only on its own valence; `python -m src.brain.fingerprint --check` → `trajectory lock ok (constants and spike digest)` exit 0; `--check --no-connectome` → exit 0; `--trajectory` → all 10 sessions identical in every column to the pre-`b43fe20` run.
+- Eligibility across all 4,064 KCs: mean 0.9907, min 0.9905, max 0.9912 — spread 0.0007, §5.4's degeneracy unchanged.
+- `src/brain/connectome.py` carries a concurrent agent's edit; I read the full diff and it is docstring/comment text only, no executable line, so it does not bear on any number above.
+- **H3 FALSE on both sessions. The honesty clause binds**: #7 may not be described as learning, training, progress, improvement, performance or score anywhere.
+
+**Next label**: `qa` (remove `developer`). Not relabelling.
+
+**Improvement Insights**:
+- [developer.md]: add — **when re-running a battery to test a prediction of "nothing moves", also run the counterfactual that shows the probe could have moved.** Two bit-identical runs cannot distinguish "the fix is correctly scoped" from "the harness never reached the code". Loading the pre-fix module from a scratch copy and replaying the same scripts costs one file and ~2 s, mutates nothing, and is what turns "all four cases pass" into evidence. This is the mutation-testing rule applied to a fix rather than to a test, and it works without touching a tree shared with four other agents.
+- [developer.md]: add — **name which of your cases discriminate and which are guard-rails.** Case C reads the same on both modules; presenting it in the same table as case B without saying so implies four independent confirmations where there is one plus three controls.
+- [workflow]: long real-brain batteries contend hard on a shared 16-core box — session 0 ran 15 LIF replays of 15,000 steps against a concurrent `aim-decodability.py` at 284% CPU and the live `ws_server.py`, and took ~45 min against an expected ~14. The numbers are deterministic so only wall time is affected, but a brief that says "expect ~15 min" should say that the estimate assumes an idle machine, or the next agent will suspect its own run has hung.
+- [workflow]: `gh issue view N --comments` **prints nothing and exits 0** in this environment; `--json comments --jq '.comments[].body'` works. Worth a line in CLAUDE.md's GitHub section — a silent empty read of the sole source of truth is the worst failure mode available, and it looks exactly like an issue with no history.
+
+**One correction made to FINAL after posting** (edited in place, so FINAL remains the last
+comment): the claim "a random tiling beat the anatomical column map" is a **like-for-like
+unsided** comparison (0.4163 vs 0.2612). The recommended arm constrains the *random* draw by
+side; a side-constrained **anatomical** draw was never run and is the one variant that could
+beat it within a hemifield. FINAL now names it, gives the one-line probe change, and fixes
+the decision rule in advance (higher within-hemifield R² subject to full-field R² ≥ 0.72).
+
+**Concurrent-edit check**: `src/brain/connectome.py` was modified by another agent during
+this run. Verified **comments and docstrings only** — zero functional lines changed
+(`git diff -U0 | grep` for non-comment +/- lines returns empty) — so every number above
+stands. I wrote to `tools/spike/` (5 new files) and `SESSION_LOG.md` and nothing else.
