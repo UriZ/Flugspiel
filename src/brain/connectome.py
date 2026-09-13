@@ -475,8 +475,8 @@ def _require(raw: Path, name: str) -> Path:
     this check is now the redundant link rather than the only one — which is the point,
     since the next parser advisory is not written yet.
 
-    Cost: three sha256 passes over ~1.1 GB (~2-3 s) on every build(), including the
-    main() path where download() just hashed the same bytes. That is against a build
+    Cost: three sha256 passes over the ~1.1 GB of sources on every build(), including
+    the main() path where download() just hashed the same bytes. Seconds against a build
     already taking minutes, so the duplicate is not worth the coupling of threading
     digests out of download(). Deliberately has no `verify=False` escape hatch — a kwarg
     that switches off a security check is a footgun, and nothing needs one.
@@ -629,8 +629,9 @@ def build(data_dir: Path | None = None) -> dict:
         "unknown_nt": int(np.isin(np.char.lower(meta.nt), ("unclear", "unknown")).sum()),
         "photoreceptors": int(np.isin(meta.cell_type, PHOTORECEPTOR_TYPES).sum()),
     }
-    # Uncompressed: 205 MB and a 0.29 s load, vs 139 MB / 16 s write / 0.83 s load.
-    # Startup latency matters more than disk here; brain.npz is tiny so it is compressed.
+    # Uncompressed costs about half again the disk of the compressed form and buys back
+    # an order of magnitude or better on both the load and the build-time write. Startup
+    # latency matters more than disk here; brain.npz is tiny so it is compressed.
     sparse.save_npz(data / "weights.npz", W, compressed=False)
     meta.save(data / "brain.npz")
     (data / "brain.json").write_text(json.dumps(summary, indent=2) + "\n")
@@ -657,8 +658,8 @@ def load(data_dir: Path | None = None) -> tuple[sparse.csc_matrix, BrainMeta]:
         # validates indptr but *skips* the index-bounds check. Out-of-range indices then
         # reach `buf[t, indices[p]] += data[p]` in the numba kernel and scipy's C
         # csc_matvec, neither of which bounds-checks — a crafted weights.npz is an
-        # arbitrary heap write (SIGSEGV verified on both backends, #15). 14 ms on the
-        # real 25.6M-nonzero matrix, against a 0.29 s load.
+        # arbitrary heap write (SIGSEGV verified on both backends, #15). On the real
+        # matrix it costs well under the load it follows.
         W.check_format(full_check=True)
     except ValueError as exc:
         raise ConnectomeError(f"{wpath} is corrupt ({exc}); delete it and run: {_BUILD_CMD}") from exc
