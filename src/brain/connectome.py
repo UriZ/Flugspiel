@@ -226,8 +226,16 @@ def build_weights(pre: np.ndarray, post: np.ndarray, weight: np.ndarray,
     W = sparse.coo_matrix((signed, (post, pre)), shape=(n, n), dtype=np.float32).tocsc()
     # CSC: `indices` holds the row (postsynaptic) index of each nonzero.
     incoming = np.bincount(W.indices, weights=np.abs(W.data), minlength=n)
-    # Raw weights are integers >= 1, so incoming >= 1 wherever there is any input; the
-    # clamp exists only to avoid 0/0 for neurons with no inputs at all (370 in the real data).
+    # Raw weights are integers >= 1, so `incoming >= 1` for every row that carries a
+    # nonzero. Neurons with no input at all are **not** what the clamp protects, however
+    # many of them the data has: CSC `indices` lists only rows that carry a nonzero, so
+    # those rows are never indexed here and 0/0 cannot arise from them. The comment this
+    # replaces said otherwise and was wrong about a step central to the model (#14).
+    # What is left for the clamp to guard is an *explicitly stored* zero weight — a
+    # structural zero the caller put in the COO triplets. The real data has none, so the
+    # clamp is provably inert on this connectome and removing it is bit-identical. It is
+    # kept because `build_weights` is pure and normalises whatever arrays it is handed,
+    # and without it such a caller gets a NaN in W instead of a finite matrix.
     W.data /= np.maximum(incoming[W.indices], 1.0).astype(np.float32)
     return W
 
