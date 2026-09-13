@@ -15,7 +15,7 @@
 // A stalled link writes gap columns and keeps the time axis honest. The raster never
 // freezes and never repeats its last value — a gap in the data has to look like a gap.
 
-import { C, FONT, RAMP_LUT } from './palette.js';
+import { C, FONT, rampCss } from './palette.js';
 
 /** 15 of the 27 classes have fewer than 500 neurons; a row for an 8-neuron class is
  *  noise at any height. They merge into `other` and the sum is preserved. */
@@ -54,7 +54,17 @@ export function createRaster() {
     get columns() { return cols; },
     get filled() { return filled; },
 
-    /** Denominators come from `ready.regions`, which is authoritative for class sizes. */
+    /** Row denominators, and which classes the `other` row absorbs.
+     *
+     *  The denominators come from `classSizes`, which the panel counts off the layout
+     *  artifact. They are **not** in `ready`: `ready.regions` is a list of class names
+     *  and carries no sizes at all, and `ready.populations` does not break down by
+     *  class. Wiring the denominators from `regionNames` instead yields zeros for every
+     *  row, and a zero denominator renders as a permanently black raster that still
+     *  looks like a working one.
+     *
+     *  `regionNames` is used for exactly one thing: naming the classes `ROWS` does not,
+     *  so `other` absorbs them and the sum is preserved. */
     setClasses(regionNames, classSizes) {
       const named = new Set(ROWS.map((r) => r.key).filter(Boolean));
       otherKeys = regionNames.filter((k) => !named.has(k));
@@ -134,10 +144,7 @@ export function createRaster() {
             const v = cells[base + r];
             if (isGap) ctx.fillStyle = '#2a1a1a';
             else if (!v) continue;
-            else {
-              const u = RAMP_LUT[Math.min(63, v >> 2)];
-              ctx.fillStyle = `rgb(${u & 0xff},${(u >> 8) & 0xff},${(u >> 16) & 0xff})`;
-            }
+            else ctx.fillStyle = rampCss(v);
             ctx.fillRect(x, rect.y + r * rowH, Math.max(1, colW + 0.5), Math.max(1, rowH));
           }
         }

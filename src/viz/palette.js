@@ -78,9 +78,17 @@ for (let i = 0; i < 256; i++) {
   DECAY_LUT[i] = v >= i ? Math.max(0, i - 1) : v;
 }
 
-/** CSS strings for the same ramp, for the zones that draw with fillStyle not ImageData. */
-export const rampCss = (t) => {
-  const u = RAMP_LUT[Math.max(0, Math.min(63, Math.round(t * 63)))];
+/** CSS string for an activity level, for the zones that draw with `fillStyle` rather
+ *  than into an ImageData — today that is the raster.
+ *
+ *  Takes the same 0..255 level the ImageData path takes and quantises it the same way,
+ *  `>> 2`. That is not a detail: the raster's rows are fractions chosen so a brightness
+ *  means the same thing there as on the map, and a ramp that rounded instead of
+ *  truncating would move some levels one LUT step away from the map's colour for the
+ *  same value. One ramp, one quantisation, or the comparison the raster exists for is
+ *  off by a step nobody can see. */
+export const rampCss = (v) => {
+  const u = RAMP_LUT[Math.max(0, Math.min(63, v >> 2))];
   return `rgb(${u & 0xff}, ${(u >> 8) & 0xff}, ${(u >> 16) & 0xff})`;
 };
 

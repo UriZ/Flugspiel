@@ -292,20 +292,33 @@ export function createPanel(canvas, ready) {
     }
   }
 
+  const BAR_INSET = 10;          // the bar, above the rect's bottom edge
+  const LABEL_GAP = 4;           // the label's baseline, above the bar
+  const LABEL_LINE = 10;         // the tallest size `scaleBar` draws the label at
+  const MIN_SCALE_BAR_H = BAR_INSET + LABEL_GAP + LABEL_LINE;
+
   /** Drawn down to the inset's width, not only at full pane width. The two panes are at
    *  genuinely different scales, so a pane without a bar is an undeclared second scale
    *  inside the first — a viewer reads the inset as part of the surrounding projection.
    *
-   *  Gated on whether the number actually fits rather than on a round minimum width: a
-   *  half-drawn measurement is worse than none, and a fixed floor either skips rects a
-   *  bar fits in or draws into ones it does not.
+   *  Two gates, and they are deliberately not the same kind.
+   *
+   *  WIDTH is gated on whether the number actually fits: a half-drawn measurement is
+   *  worse than none, and a fixed floor either skips rects a bar fits in or draws into
+   *  ones it does not.
+   *
+   *  HEIGHT is a fixed floor, because the bar and its label are placed upwards from the
+   *  rect's bottom edge — the label's baseline sits `BAR_INSET + LABEL_GAP` above it, so
+   *  in a shorter rect the text is drawn outside the pane it describes. The floor is
+   *  derived from those two constants and a line's height rather than written down, so
+   *  moving the bar cannot leave the guard behind.
    *
    *  @param {'left'|'right'} align which end of the pane the bar sits at. The brain's
    *  moves left when the VNC is inset, or the two bars land on top of each other in the
    *  same corner and the reading everything else here depends on becomes unreadable.
    */
   function scaleBar(rect, um, align = 'right') {
-    if (!rect || !um || rect.h < 24) return;
+    if (!rect || !um || rect.h < MIN_SCALE_BAR_H) return;
     // A round number of micrometres whose bar is a comfortable fraction of the pane.
     const targets = [10, 20, 50, 100, 200, 500, 1000];
     const pxPerUm = rect.w / um;
@@ -326,11 +339,11 @@ export function createPanel(canvas, ready) {
     }
     if (Math.max(barW, labelW) + 4 > rect.w) return;
     const x = align === 'left' ? rect.x + 6 : rect.x + rect.w - barW - 6;
-    const y = rect.y + rect.h - 10;
+    const y = rect.y + rect.h - BAR_INSET;
     ctx.fillStyle = '#3a3a3a';
     ctx.fillRect(x, y, barW, 1);
-    if (align === 'left') text(label, x, y - 4, C.chromeDim, px);
-    else text(label, x + barW, y - 4, C.chromeDim, px, 'right');
+    if (align === 'left') text(label, x, y - LABEL_GAP, C.chromeDim, px);
+    else text(label, x + barW, y - LABEL_GAP, C.chromeDim, px, 'right');
   }
 
   function renderHeader(rect) {
