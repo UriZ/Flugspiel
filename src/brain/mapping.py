@@ -25,6 +25,7 @@ DEFAULT_MAPPING_PATH = Path(__file__).resolve().parent / "mappings" / "missile_a
 SIDES = (None, "L", "R", "M")
 GAIN_MODS = (None, "drive")
 Y_POLICIES = ("threat", "fixed")
+AIM_MODES = ("laterality", "readout")
 
 # Every key each object may carry. Anything else is rejected at load: a mapping is read
 # with `.get(key, default)` throughout, so a misspelled key does not fail — it silently
@@ -37,11 +38,13 @@ Y_POLICIES = ("threat", "fixed")
 # tolerated; the allowlist landed after that was checked).
 TOP_KEYS = ("version", "game", "columns", "max_inject", "hex_flip", "sites", "drive_mod_k",
             "loom", "retina", "aim", "fire", "weapon", "reward")
-SITE_KEYS = ("name", "types", "side", "signal", "gain", "gain_mod", "prosthesis", "enabled")
+SITE_KEYS = ("name", "types", "side", "signal", "gain", "gain_mod", "prosthesis", "enabled",
+             "code", "code_seed")
 CHANNEL_KEYS = ("types", "tau", "on_hz", "off_hz", "spikes_per_action", "enabled")
 LOOM_KEYS = ("y_ground", "tau", "ttc_min", "side_flip")
 RETINA_KEYS = ("spread_cols",)
-AIM_KEYS = ("types", "tau", "dead", "k_turn", "zero", "invert", "y_policy", "y_default")
+AIM_KEYS = ("types", "tau", "dead", "k_turn", "zero", "invert", "y_policy", "y_default",
+            "mode", "readout", "tau_servo", "rate_max")
 
 
 class MappingError(ValueError):
@@ -60,6 +63,10 @@ class Site:
     gain_mod: str | None   # None, or "drive" for gain·(1 + drive_mod_k·drive)
     prosthesis: bool       # a shortcut past the fly's own circuitry; #7 must disclose it
     enabled: bool
+    code: str | None       # None, or an `encoder.CODE_MAPS` name: this site's own azimuth
+                           # column per neuron, instead of the shared photoreceptor vote
+    code_seed: int | None  # required by a code that draws its map, rejected by one that
+                           # derives it — an unseeded arbitrary basis is unreproducible
 
 
 @dataclass(frozen=True)
@@ -174,6 +181,20 @@ class Mapping:
         if aim.get("y_policy") not in Y_POLICIES:
             raise MappingError(f"aim.y_policy must be one of {Y_POLICIES}, got {aim.get('y_policy')!r}")
         aim["invert"] = bool(aim.get("invert", False))
+        # `laterality` is the default so a mapping written before the fitted readout
+        # existed still loads. The readout keys are validated only in the mode that reads
+        # them, for the same reason.
+        aim.setdefault("mode", "laterality")
+        if aim["mode"] not in AIM_MODES:
+            raise MappingError(f"aim.mode must be one of {AIM_MODES}, got {aim['mode']!r}")
+        if aim["mode"] == "readout":
+            name = aim.get("readout")
+            if not isinstance(name, str) or not name:
+                raise MappingError("aim.readout must name a file in mappings/ when "
+                                   "aim.mode is 'readout'")
+            aim["readout"] = (DEFAULT_MAPPING_PATH.parent / name).resolve()
+            _num(aim, "tau_servo", "aim", low=1e-9)
+            _num(aim, "rate_max", "aim", low=1e-9)
 
         return cls(
             version=1, game=game, columns=columns, max_inject=max_inject,
@@ -190,6 +211,20 @@ def _known_signals() -> Sequence[str]:
     from .encoder import SIGNALS
 
     return tuple(SIGNALS)
+
+
+def _vector_signals() -> frozenset:
+    """Signals with one value per azimuth column. Late import, as above."""
+    from .encoder import VECTOR_SIGNALS
+
+    return VECTOR_SIGNALS
+
+
+def _known_codes() -> dict[str, bool]:
+    """Code map name -> whether it needs a `code_seed`. Late import, as above."""
+    from .encoder import CODE_MAPS
+
+    return {name: needs_seed for name, (_, needs_seed) in CODE_MAPS.items()}
 
 
 def _only(d: dict, known: Sequence[str], where: str) -> None:
@@ -216,6 +251,40 @@ def _types(v: Any, where: str) -> tuple[str, ...]:
     return tuple(v)
 
 
+def _code(entry: dict, name: str) -> tuple[str | None, int | None]:
+    """A site's own azimuth column map, and the seed it does or does not take.
+
+    The seed is not optional-with-a-default: a map that draws its columns is a different
+    map under every seed, so an unseeded one cannot be reproduced from the config that
+    ran it. A map that derives its columns from the connectome rejects a seed rather than
+    ignoring one, because a seed that changes nothing reads as a knob that does.
+    """
+    code = entry.get("code")
+    seed = entry.get("code_seed")
+    if code is None:
+        if seed is not None:
+            raise MappingError(f"site {name!r}: code_seed without a code")
+        return None, None
+    codes = _known_codes()
+    if code not in codes:
+        raise MappingError(f"site {name!r}: unknown code {code!r}; "
+                           f"known codes are {sorted(codes)}")
+    # A code assigns one azimuth column per neuron, which is only meaningful for a signal
+    # that has a value per column. Paired with a scalar signal the encoder would index a
+    # 0-d array on the first frame, which is exactly the "fails at frame 1" that every
+    # other check in this module exists to prevent.
+    if entry.get("signal") not in _vector_signals():
+        raise MappingError(f"site {name!r}: code {code!r} needs a per-column signal; "
+                           f"{entry.get('signal')!r} is a scalar")
+    if codes[code] and (not isinstance(seed, int) or isinstance(seed, bool)):
+        raise MappingError(f"site {name!r}: code {code!r} requires an integer code_seed, "
+                           f"got {seed!r}")
+    if not codes[code] and seed is not None:
+        raise MappingError(f"site {name!r}: code {code!r} is derived from the connectome "
+                           f"and takes no code_seed")
+    return code, None if seed is None else int(seed)
+
+
 def _site(entry: Any, signals: Sequence[str]) -> Site:
     if not isinstance(entry, dict):
         raise MappingError(f"each site must be an object, got {entry!r}")
@@ -231,11 +300,12 @@ def _site(entry: Any, signals: Sequence[str]) -> Site:
     if entry.get("gain_mod") not in GAIN_MODS:
         raise MappingError(f"site {name!r}: gain_mod must be one of {GAIN_MODS}, "
                            f"got {entry.get('gain_mod')!r}")
+    code, code_seed = _code(entry, name)
     return Site(
         name=name, types=_types(entry.get("types"), f"site {name!r}"), side=entry.get("side"),
         signal=entry["signal"], gain=_num(entry, "gain", f"site {name!r}", low=0.0),
         gain_mod=entry.get("gain_mod"), prosthesis=bool(entry.get("prosthesis", False)),
-        enabled=bool(entry.get("enabled", True)),
+        enabled=bool(entry.get("enabled", True)), code=code, code_seed=code_seed,
     )
 
 

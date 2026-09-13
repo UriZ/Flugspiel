@@ -185,8 +185,17 @@ def test_full_loop_runs_and_calibrates(brain):
     """encode → step → observe → decode → on_result on the real brain, end to end."""
     enc, dec = Encoder(brain), Decoder(brain)
     zero = dec.calibrate(enc, steps=100, settle=50)
-    assert math.isfinite(zero) and -1.0 <= zero <= 1.0
-    assert dec.aim_zero == zero
+    if dec.readout is None:
+        assert math.isfinite(zero) and -1.0 <= zero <= 1.0
+        assert dec.aim_zero == zero
+    else:
+        # Readout mode has no zero to measure — the fitted intercept is the zero — and
+        # `calibrate()` must return before resetting the brain, or every session boundary
+        # reinstates the reset #22 removed (#40 §9).
+        steps = brain.steps
+        assert zero is None and dec.aim_zero is None
+        assert dec.calibrate(enc, steps=100, settle=50) is None
+        assert brain.steps == steps, "calibrate() must not step the brain in readout mode"
 
     dt = brain.params.dt
     frame = enc.encode(state(0.2), dec.crosshair_x)
@@ -204,4 +213,7 @@ def test_full_loop_runs_and_calibrates(brain):
     assert 0.0 <= dec.crosshair_x <= 1.0
     tele = dec.telemetry()
     assert tele["fire_hz"] > 0 and tele["halted"] is False
-    assert frame.prosthetic_sites == ["aim_bias_L", "aim_bias_R"]
+    # The PFL3 prosthesis is retired (#40 §5.3) — it stays in the config, disabled, as the
+    # A/B control. The azimuth basis the encoder now uses is disclosed in its place.
+    assert frame.prosthetic_sites == []
+    assert frame.coded_sites == ["looming_code"]

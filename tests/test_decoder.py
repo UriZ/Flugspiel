@@ -20,6 +20,11 @@ DT = 0.02
 def cfg(**over) -> dict:
     raw = json.loads(DEFAULT_MAPPING_PATH.read_text())
     raw.update(copy.deepcopy(over))
+    # `laterality`, pinned: the shipped config runs the fitted readout, which binds to real
+    # MaleCNS body ids and correctly refuses the 8-neuron brain below. These are the tests
+    # of the laterality mode — the A/B control the readout is measured against — and that
+    # mode has to stay exercised for the comparison to mean anything (#40 §5).
+    raw["aim"] = {**raw["aim"], "mode": "laterality"}
     return raw
 
 
@@ -32,7 +37,7 @@ def toy_brain():
 
 @pytest.fixture
 def dec():
-    d = Decoder(toy_brain())
+    d = Decoder(toy_brain(), Mapping.load(cfg()))
     d.aim_zero = 0.0  # calibration is tested separately; D-tests pin the zero
     return d
 
@@ -413,7 +418,7 @@ def biased_encoder(brain, gain=1.0):
 def test_calibrate_measures_the_zero_on_this_brain(dec):
     """§2.4: the zero is a property of this brain and seed, not a constant."""
     assert dec.mapping.aim["zero"] is None
-    fresh = Decoder(dec.brain)
+    fresh = Decoder(dec.brain, Mapping.load(cfg()))
     assert fresh.aim_zero is None
     zero = fresh.calibrate(biased_encoder(dec.brain, gain=3.0), steps=200, settle=50)
     assert zero == fresh.aim_zero and math.isfinite(zero)
@@ -427,7 +432,7 @@ def test_calibrate_measures_the_zero_on_this_brain(dec):
 
 def test_unmeasured_zero_would_drift(dec):
     """The other half of the above: without calibration the same brain aims right forever."""
-    naive = Decoder(dec.brain)
+    naive = Decoder(dec.brain, Mapping.load(cfg()))
     frame = biased_encoder(dec.brain, gain=3.0).neutral()
     for _ in range(200):
         naive.observe(dec.brain.step(inject=frame.inject), DT)
@@ -444,5 +449,5 @@ def test_calibrate_is_skipped_when_config_pins_the_zero(dec):
 
 def test_telemetry_exposes_every_field_4_and_6_consume(dec):
     keys = {"aim_index", "aim_cmd", "crosshair_x", "aim_zero", "fire_hz", "weapon_hz",
-            "y_source", "halted", "stats"}
+            "y_source", "halted", "stats", "aim_mode", "aim_hat", "aim_readout"}
     assert set(dec.telemetry()) == keys

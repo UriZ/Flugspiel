@@ -41,9 +41,12 @@ def toy_brain():
     photo = [(add(cls, side), t) for side in ("L", "R")
              for cls, t in zip(("R1-6", "R7", "R8", "R1-6"), targets)]
     orphan = add("R7", "L")
+    lc = []
     for cell_type in ("LC4", "LPLC2", "DNa02", "DNp01", "PFL3", "ALT"):
-        add(cell_type, "L")
-        add(cell_type, "R")
+        for side in ("L", "R"):
+            j = add(cell_type, side)
+            if cell_type in ("LC4", "LPLC2"):
+                lc.append(j)
     for cell_type in ("DNpe023", "DNg100", "MDN", *PEPTIDE):
         add(cell_type, "M")
 
@@ -54,12 +57,31 @@ def toy_brain():
     W = sparse.lil_matrix((n, n), dtype=np.float32)
     for j, t in photo:
         W[t, j] = 1.0
+    # LC4/LPLC2 carry no hex of their own and `looming_columns` votes over their INPUTS,
+    # so without an input that carries hex the coded looming site assigns none of them
+    # and every assertion about looming amounts passes against an empty array.
+    for k, j in enumerate(lc):
+        W[j, targets[k % len(targets)]] = 1.0
     return make_brain(sparse.csc_matrix(W), meta), [j for j, _ in photo], orphan
 
 
 def cfg(**over) -> dict:
     raw = json.loads(DEFAULT_MAPPING_PATH.read_text())
     raw.update(copy.deepcopy(over))
+    return raw
+
+
+def scalar_loom(**over) -> dict:
+    """The shipped config with the **scalar** looming sites enabled and the code off.
+
+    `looming_L`/`looming_R` ship disabled (#40 §5.1) — the coded site replaces them — but
+    they are the A/B control every claim for the coded site is a comparison against, so
+    the tests that pin their behaviour enable them explicitly rather than disappearing.
+    """
+    raw = cfg(**over)
+    raw["sites"] = [{**s, "enabled": s["name"] in ("looming_L", "looming_R")
+                     if s["name"].startswith("looming") else s["enabled"]}
+                    for s in raw["sites"]]
     return raw
 
 
@@ -158,6 +180,9 @@ def test_luminance_polarity_and_range(enc):
 
 def test_unassigned_photoreceptors_excluded(enc):
     frame = enc.encode(state())
+    # One orphan photoreceptor. The count is per *vector site*, not per photoreceptor:
+    # the coded looming site reports its own unassigned cells through the same field, and
+    # this toy brain gives every LC4/LPLC2 a hex-carrying input, so it contributes none.
     assert frame.unassigned == 1
     assert not any(enc.orphan in sub for sub, _ in frame.inject)
 
@@ -188,10 +213,18 @@ def test_loom_side_split(enc):
     # Telemetry agreeing with the truth is not enough: each hemisphere's *injection* must
     # carry its own side's value. A side-blind encoder looks perfect in `frame.loom`.
     gain = next(s.gain for s in enc.mapping.sites if s.name == "looming_L")
-    assert amounts_of(frame, enc.brain.cells(["LC4", "LPLC2"], side="L")) == pytest.approx(
-        gain * 0.809, abs=1e-3)
-    assert amounts_of(frame, enc.brain.cells(["LC4", "LPLC2"], side="R")) == pytest.approx(
-        gain * 0.155, abs=1e-3)
+    scalar = Encoder(enc.brain, Mapping.load(scalar_loom()))
+    sframe = scalar.encode(state(two))
+    left, right = (enc.brain.cells(["LC4", "LPLC2"], side=s) for s in ("L", "R"))
+    assert amounts_of(sframe, left) == pytest.approx(gain * 0.809, abs=1e-3)
+    assert amounts_of(sframe, right) == pytest.approx(gain * 0.155, abs=1e-3)
+
+    # The coded site keeps that routing — a left threat drives left cells — while adding
+    # position within the side, so the per-cell amounts are a distribution and only the
+    # per-side totals are comparable.
+    assert amounts_of(frame, left).sum() > amounts_of(frame, right).sum()
+    assert amounts_of(frame, left).sum() == pytest.approx(
+        amounts_of(sframe, left).sum(), rel=1e-5)
 
     flipped = Encoder(enc.brain, Mapping.load(cfg(loom={**enc.mapping.loom, "side_flip": True})))
     swapped = flipped.encode(state([dict(x=0.2, y=0.6, vy=0.2), dict(x=0.9, y=0.2, vy=0.1)]))
@@ -225,16 +258,20 @@ def test_loom_saturates_at_one(enc):
 def test_drive_and_gain_mod(enc):
     loom_L = enc.brain.cells(["LC4", "LPLC2"], side="L")
     base = next(s.gain for s in enc.mapping.sites if s.name == "looming_L")
+    scalar = Encoder(enc.brain, Mapping.load(scalar_loom()))
     missile = [dict(x=0.1, y=0.6, vy=0.2)]  # loom 0.809
 
-    healthy = enc.encode(state(missile, health=1.0))
+    healthy = scalar.encode(state(missile, health=1.0))
     assert healthy.drive == 0.0
     assert amounts_of(healthy, loom_L) == pytest.approx(base * 0.809, abs=1e-3)
 
-    hurt = enc.encode(state(missile, health=0.0))
+    hurt = scalar.encode(state(missile, health=0.0))
     assert hurt.drive == 1.0
     k = enc.mapping.drive_mod_k
     assert amounts_of(hurt, loom_L) == pytest.approx(base * (1 + k) * 0.809, abs=1e-3)
+    # The coded site carries the same gain_mod, on its total rather than per cell.
+    assert amounts_of(enc.encode(state(missile, health=0.0)), loom_L).sum() == \
+        pytest.approx((1 + k) * amounts_of(enc.encode(state(missile)), loom_L).sum(), rel=1e-5)
 
     pool = enc.brain.cells(list(PEPTIDE))
     pool_gain = next(s.gain for s in enc.mapping.sites if s.name == "drive")
@@ -324,13 +361,15 @@ def test_encode_is_level_held(enc):
 def test_config_retunes_without_code_change(enc):
     """AC5 — behaviour changes from JSON alone."""
     sites = cfg()["sites"]
-    loud = [{**s, "gain": s["gain"] * 2} if s["name"] == "looming_L" else
+    loud = [{**s, "gain": s["gain"] * 2} if s["name"] == "looming_code" else
             {**s, "enabled": False} if s["name"] == "retina" else s for s in sites]
     tuned = Encoder(enc.brain, Mapping.load(cfg(sites=loud)))
     missile = [dict(x=0.1, y=0.6, vy=0.2)]
 
     loom_L = enc.brain.cells(["LC4", "LPLC2"], side="L")
-    assert amounts_of(tuned.encode(state(missile)), loom_L) == pytest.approx(
+    doubled = amounts_of(tuned.encode(state(missile)), loom_L)
+    assert len(doubled) > 0, "the coded site must actually inject, or this asserts nothing"
+    assert doubled == pytest.approx(
         2 * amounts_of(enc.encode(state(missile)), loom_L), rel=1e-6)
 
     retina = enc.brain.cells(["R1-6", "R7", "R8"])
@@ -340,15 +379,23 @@ def test_config_retunes_without_code_change(enc):
 
 def test_prosthetic_sites_are_disclosed(enc):
     """#7 must be able to see that aiming came from a premotor shortcut (§2.3)."""
-    assert enc.encode(state()).prosthetic_sites == ["aim_bias_L", "aim_bias_R"]
-    off = [{**s, "enabled": False} if s["name"].startswith("aim_bias") else s
-           for s in cfg()["sites"]]
-    honest = Encoder(enc.brain, Mapping.load(cfg(sites=off)))
-    assert honest.encode(state()).prosthetic_sites == []
+    # The shipped config retired the PFL3 prosthesis (#40 §5.3), so the honest answer is
+    # now the default one. The site stays in the config, disabled, as the A/B control —
+    # and re-enabling it must still be disclosed, which is the half that can rot.
+    assert enc.encode(state()).prosthetic_sites == []
+    on = [{**s, "enabled": True} if s["name"].startswith("aim_bias") else s
+          for s in cfg()["sites"]]
+    assisted = Encoder(enc.brain, Mapping.load(cfg(sites=on)))
+    assert assisted.encode(state()).prosthetic_sites == ["aim_bias_L", "aim_bias_R"]
+    assert enc.encode(state()).coded_sites == ["looming_code"], (
+        "the azimuth basis is ours, not the fly's, and is disclosed like a prosthesis")
 
 
 def test_aim_error_is_relative_to_the_crosshair(enc):
     """PFL3 is contralateral: a target to the right raises aim_err_R (§3.3)."""
+    on = [{**s, "enabled": True} if s["name"].startswith("aim_bias") else s
+          for s in cfg()["sites"]]
+    enc = Encoder(enc.brain, Mapping.load(cfg(sites=on)))  # shipped disabled (#40 §5.3)
     pfl_L = enc.brain.cells(["PFL3"], side="L")
     pfl_R = enc.brain.cells(["PFL3"], side="R")
     right = enc.encode(state([dict(x=0.9, y=0.6, vy=0.2)]), crosshair_x=0.5)
@@ -398,4 +445,4 @@ def test_retina_is_scanned_once_per_encoder(enc, monkeypatch):
     for _ in range(3):
         frame = e.encode(state())
     assert len(calls) == 1
-    assert len(frame.inject) == 6, "one entry per enabled site"
+    assert len(frame.inject) == 3, "one entry per enabled site"

@@ -21,7 +21,7 @@ def cfg(**over) -> dict:
 def test_default_mapping_loads():
     m = Mapping.default()
     assert m.game == "missile_attack" and m.version == 1 and m.columns == 36
-    assert len(m.sites) == 7
+    assert len(m.sites) == 8
     assert [s.name for s in m.sites if s.prosthesis] == ["aim_bias_L", "aim_bias_R", "weapon_bias"]
     assert m.aim["zero"] is None, "a pinned zero would bias the crosshair (§2.4)"
     assert all(s.signal in SIGNALS for s in m.sites)
@@ -29,7 +29,10 @@ def test_default_mapping_loads():
 
 def test_unknown_signal_raises():
     sites = cfg()["sites"]
-    sites[1] = {**sites[1], "signal": "loom_up"}
+    # By name, not by index: a site added or reordered in the shipped config must not
+    # silently retarget this test at a different site.
+    i = next(i for i, s in enumerate(sites) if s["name"] == "looming_L")
+    sites[i] = {**sites[i], "signal": "loom_up"}
     with pytest.raises(MappingError, match="looming_L.*loom_up"):
         Mapping.load(cfg(sites=sites))
 

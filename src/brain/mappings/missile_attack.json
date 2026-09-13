@@ -7,18 +7,21 @@
   "sites": [
     { "name": "retina", "types": ["R1-6", "R7", "R8"], "side": null, "signal": "luminance",
       "gain": 0.30, "gain_mod": null, "prosthesis": false, "enabled": true },
+    { "name": "looming_code", "types": ["LC4", "LPLC2"], "side": null,
+      "signal": "azimuth_code", "code": "azimuth_sided_anat",
+      "gain": 0.30, "gain_mod": "drive", "prosthesis": false, "enabled": true },
     { "name": "looming_L", "types": ["LC4", "LPLC2"], "side": "L", "signal": "loom_L",
-      "gain": 0.30, "gain_mod": "drive", "prosthesis": false, "enabled": true },
+      "gain": 0.30, "gain_mod": "drive", "prosthesis": false, "enabled": false },
     { "name": "looming_R", "types": ["LC4", "LPLC2"], "side": "R", "signal": "loom_R",
-      "gain": 0.30, "gain_mod": "drive", "prosthesis": false, "enabled": true },
+      "gain": 0.30, "gain_mod": "drive", "prosthesis": false, "enabled": false },
     { "name": "drive", "types": ["NPFL1-I", "Hugin-RG", "CRZ", "CRZ01,CRZ02", "DH44", "LK",
                                  "IPC", "ISN", "AstA1", "DSKMP3"],
       "side": null, "signal": "drive",
       "gain": 1.00, "gain_mod": null, "prosthesis": false, "enabled": true },
     { "name": "aim_bias_L", "types": ["PFL3"], "side": "L", "signal": "aim_err_L",
-      "gain": 2.00, "gain_mod": null, "prosthesis": true, "enabled": true },
+      "gain": 2.00, "gain_mod": null, "prosthesis": true, "enabled": false },
     { "name": "aim_bias_R", "types": ["PFL3"], "side": "R", "signal": "aim_err_R",
-      "gain": 2.00, "gain_mod": null, "prosthesis": true, "enabled": true },
+      "gain": 2.00, "gain_mod": null, "prosthesis": true, "enabled": false },
     { "name": "weapon_bias", "types": ["DNpe023"], "side": null, "signal": "zero",
       "gain": 1.00, "gain_mod": null, "prosthesis": true, "enabled": false }
   ],
@@ -27,7 +30,9 @@
   "retina": { "spread_cols": 1.5 },
   "aim": {
     "types": ["DNa02"], "tau": 0.5, "dead": 0.15, "k_turn": 1.0,
-    "zero": null, "invert": false, "y_policy": "threat", "y_default": 0.35
+    "zero": null, "invert": false, "y_policy": "threat", "y_default": 0.35,
+    "mode": "readout", "readout": "../readouts/aim_ridge.npz",
+    "tau_servo": 0.18, "rate_max": 3.0
   },
   "fire": { "types": ["DNp01"], "tau": 0.25, "on_hz": 4.0, "off_hz": 1.0,
             "spikes_per_action": 6.0 },

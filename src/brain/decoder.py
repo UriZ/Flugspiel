@@ -2,7 +2,25 @@
 
 Three readout channels, all named in config:
 
-* **aim** — DNa02 laterality. The decoder **integrates**: the de-biased laterality index is
+* **aim** — two modes, selected by `aim.mode`.
+
+  `"readout"` (shipped) is a **fitted** linear map over the descending population to a
+  *position* estimate, servoed onto the crosshair. It is what makes this a reservoir
+  computer rather than a hand-wired one: the brain is frozen and the readout's
+  coefficients come from data. See `readout.py`; the coefficients themselves carry what
+  they were fitted on.
+
+  `"laterality"` is the original hand-written rule, retained and still tested. Not
+  nostalgia: every claim made for the fitted readout is a *comparison* against it, and a
+  mode that cannot be run is a comparison that cannot be re-measured. `telemetry()`
+  reports the laterality index and command in both modes for the same reason.
+
+  What follows describes `"laterality"`, and the measurements are the ones that shaped
+  it. The readout mode was built because the cell those measurements were made on turned
+  out to carry no side information at all (#40 AC2) — the arithmetic below was correct
+  and its input was noise.
+
+  DNa02 laterality. The decoder **integrates**: the de-biased laterality index is
   a *turn rate* on a crosshair the decoder owns, not a screen coordinate. Forced by
   measurement (§2.4): the index saturates by |u| ~ 0.2 and is asymmetric at the rails
   (-1.29 vs +0.66), so a proportional index→x map would be a bang-bang controller.
@@ -51,6 +69,7 @@ import numpy as np
 
 from .lif import FlyBrain
 from .mapping import Mapping, MappingError, column, loom
+from .readout import LinearReadout
 
 if TYPE_CHECKING:  # §3.1: the decoder must not import the encoder at runtime
     from .encoder import Encoder
@@ -89,6 +108,16 @@ class Decoder:
         self._mask = np.zeros(brain.n, dtype=bool)  # reused; zeroing 166k per step is waste
         zero = m.aim["zero"]
         self.aim_zero = None if zero is None else float(zero)  # else calibrate() measures it
+
+        # Construction-time, like the type check above and `Encoder.__init__`'s: a readout
+        # that does not describe this brain must not reach the first frame.
+        self.readout: LinearReadout | None = None
+        self._ro_idx = np.zeros(0, dtype=np.int64)
+        if m.aim["mode"] == "readout":
+            self.readout = LinearReadout.load(m.aim["readout"])
+            self._ro_idx = self.readout.bind(brain)
+        self._trace = np.zeros(len(self._ro_idx))
+        self._hat = 0.5
         self.reset(readout=True)
 
     def reset(self, *, readout: bool = False) -> None:
@@ -105,6 +134,8 @@ class Decoder:
         """
         if readout:
             self.rates = {k: 0.0 for k in self._pop}
+            self._trace[:] = 0.0
+            self._hat = 0.5
             self._latched = {"fire": False, "weapon": False}
             self._charge = {"fire": 0.0, "weapon": 0.0}
             self._brain_dt = 0.0
@@ -132,6 +163,12 @@ class Decoder:
             count = int(self._mask[idx].sum())
             a = 1.0 - math.exp(-dt / self._tau[key])
             self.rates[key] += a * (count / dt - self.rates[key])
+        if self.readout is not None:
+            # Per neuron, not pooled: the readout's whole content is which cells fired.
+            # It rides the mask the loop above already set and cleared, so the cost is one
+            # gather and one axpy on k values, not a second pass over the brain.
+            a = 1.0 - math.exp(-dt / self.readout.tau)
+            self._trace += a * (self._mask[self._ro_idx] / dt - self._trace)
         self._mask[fired] = False
 
     # ---------------------------------------------------------------- per decode tick
@@ -159,13 +196,21 @@ class Decoder:
 
         dt, self._brain_dt = (self._brain_dt or dt_decode), 0.0
 
+        # Measured in both modes. In readout mode it moves nothing — it is the A/B
+        # instrument the acceptance criteria compare against, published beside the
+        # readout's own estimate so the two can be read off one live session.
         self._cmd = self._command()
+        if self.readout is None:
+            delta = self.mapping.aim["k_turn"] * dt * self._cmd
+            aiming = self._cmd != 0.0
+        else:
+            delta = self._servo(dt)
+            aiming = delta != 0.0
         # Written state, so a single non-finite value would be permanent — the same trap
         # as a NaN in `FlyBrain.v` (#13). The clip does not protect it (#35), and `dt` is
         # the caller's, so the guard is on what is about to be stored: a step that does
         # not produce a usable position leaves the crosshair where it was.
-        moved = float(np.clip(
-            self.crosshair_x + self.mapping.aim["k_turn"] * dt * self._cmd, 0.0, 1.0))
+        moved = float(np.clip(self.crosshair_x + delta, 0.0, 1.0))
         if math.isfinite(moved):
             self.crosshair_x = moved
 
@@ -175,7 +220,7 @@ class Decoder:
         action: dict[str, Any]
         if fire:
             action = {"action": "fire", **self._coords(state)}
-        elif self._cmd != 0.0:
+        elif aiming:
             action = {"action": "aim", **self._coords(state)}
         else:
             action = {"action": "noop"}
@@ -222,14 +267,23 @@ class Decoder:
 
     # ---------------------------------------------------------------- calibration
 
-    def calibrate(self, encoder: Encoder, steps: int = 600, settle: int = 150) -> float:
+    def calibrate(self, encoder: Encoder, steps: int = 600, settle: int = 150) -> float | None:
         """Measure and store the aim channel's zero on *this* brain and seed.
 
         Resets the brain and the decoder, holds the neutral frame (empty sky, full health,
         symmetric aim drive) and averages the raw laterality index. Skipped if the config
         pins `aim.zero` — a hardcoded zero biases the crosshair one way (sd 0.09 across
         seeds), so the config value exists only for replaying a recorded session.
+
+        **Skipped entirely in readout mode**, and skipped *here* rather than at the call
+        sites: the fitted intercept already is the zero, so re-centring would subtract it
+        twice, and this method resets the brain. #4 deliberately does not reset the brain
+        at a session boundary (#22); a calibration that ran there anyway would reinstate
+        exactly that reset and spend `settle + steps` steps producing a number nothing
+        reads. `aim_zero` stays `None` and `telemetry()` reports the mode.
         """
+        if self.readout is not None:
+            return None
         if self.mapping.aim["zero"] is not None:
             self.aim_zero = float(self.mapping.aim["zero"])
             return self.aim_zero
@@ -251,7 +305,10 @@ class Decoder:
     def telemetry(self) -> dict:
         return {
             "aim_index": self._index(), "aim_cmd": self._cmd, "crosshair_x": self.crosshair_x,
-            "aim_zero": self.aim_zero, "fire_hz": self.rates["fire"],
+            "aim_zero": self.aim_zero, "aim_mode": self.mapping.aim["mode"],
+            "aim_hat": self._hat if self.readout is not None else None,
+            "aim_readout": dict(self.readout.provenance) if self.readout is not None else None,
+            "fire_hz": self.rates["fire"],
             "weapon_hz": self.rates["weapon"], "y_source": self._y_source,
             "halted": self.halted, "stats": self.stats,
         }
@@ -281,6 +338,29 @@ class Decoder:
         dead = aim["dead"]
         cmd = 0.0 if abs(cmd) <= dead else math.copysign((abs(cmd) - dead) / (1.0 - dead), cmd)
         return -cmd if aim["invert"] else cmd
+
+    def _servo(self, dt: float) -> float:
+        """Crosshair step toward the readout's position estimate, in screen units.
+
+        First-order and not an integrator, because the quantity changed kind: the
+        laterality index was argued to be a yaw *velocity*, while a fitted readout
+        produces a *position*. Integrating a position estimate would make the crosshair
+        run away from a target it had already reached.
+
+        `1 - exp(-dt/tau)` and not a constant: `dt` is brain time accumulated since the
+        last decode, which varies with how the loop is scheduled, and a fixed fraction
+        per call would make the same brain aim differently at a different tick rate.
+
+        The rate limit is what makes the servo safe rather than merely smooth — it bounds
+        how far one tick's estimate can throw the crosshair, so a single bad frame costs
+        `rate_max * dt` and not the screen.
+        """
+        aim = self.mapping.aim
+        self._hat = self.readout.apply(self._trace)
+        alpha = 1.0 - math.exp(-dt / aim["tau_servo"])
+        step = alpha * (self._hat - self.crosshair_x)
+        limit = aim["rate_max"] * dt
+        return float(np.clip(step, -limit, limit))
 
     def _trigger(self, key: str, channel, dt: float) -> bool:
         """Latch at `on_hz`, release below `off_hz`; fire on the edge and then on charge.

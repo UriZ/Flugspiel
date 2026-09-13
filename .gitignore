@@ -16,6 +16,9 @@ venv/
 # Connectome data (large, downloaded at build time)
 data/
 *.npz
+# ...but the fitted aim readout is 6 KB of coefficients the shipped config cannot run
+# without, so it is committed (#40).
+!src/brain/readouts/*.npz
 
 # IDE
 .idea/

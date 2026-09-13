@@ -11,8 +11,18 @@ Four channels, all of them config-driven (`src/brain/mappings/missile_attack.jso
   Measured (§2.2): photoreceptor drive does **not** reach any descending neuron — injecting
   +2.0 into all 6,006 leaves every DN readout unchanged. The channel is built because it is
   the correct sensory representation and #6/#7 need it, not because it moves the decoder.
-* **looming** (AC2) — LC4+LPLC2 per side, from time-to-contact. This *is* what drives the
-  fire channel: 0.30 into LC4+LPLC2-L takes DNp01-L to 17.6 Hz against 0.12 Hz contra.
+* **looming** (AC2) — LC4+LPLC2, from time-to-contact. This *is* what drives the fire
+  channel: 0.30 into LC4+LPLC2-L takes DNp01-L to 17.6 Hz against 0.12 Hz contra. It is
+  also the only azimuth-bearing channel that reaches the descending layer at all, and it
+  used to be delivered as **two scalars** — `loom_L`/`loom_R`, each injected identically
+  into every LC4/LPLC2 on one side — which destroyed azimuth at the point of injection,
+  before the brain saw it (#40). It is now one `azimuth_code` site: a per-column looming
+  profile delivered to each LC4/LPLC2 at the azimuth column its own `code` map gives it.
+  `looming_L`/`looming_R` remain in the config, disabled, as the A/B control.
+  The two cues must come from **one** site: a scalar site run alongside a coded one
+  drives every cell on a side with a common-mode signal that swamps the spatial pattern
+  (measured, #40 §5.1). Hence the side constraint inside the code map rather than two
+  sites.
 * **drive** (AC3) — the peptidergic pool, from aggregate base health. Measured (§2.5):
   driving those 59 neurons at +3.0 moves global firing by 0.018 percentage points and no DN
   readout at all. The literal injection is kept (AC3, and #6 draws it); its measurable path
@@ -58,8 +68,10 @@ class EncodedFrame:
     drive: float
     launcher_hp: list[float]                     # per-launcher, for #6/#7 spatial damage
     launcher_x: list[float]
-    unassigned: int                              # photoreceptors with no azimuth column
+    unassigned: int                              # site cells with no azimuth column
     prosthetic_sites: list[str]
+    coded_sites: list[str]                       # sites whose azimuth basis is ours, not
+                                                 # the fly's: see `CODE_MAPS`
     rejected: int                                # wire values the encoder could not use
 
 
@@ -109,8 +121,26 @@ def _aim_err(c: SignalCtx, sign: float) -> float:
     return (1.0 + sign * err) / 2.0
 
 
+def _azimuth_code(c: SignalCtx) -> np.ndarray:
+    """Per-column looming strength: each threat a Gaussian bump at its own azimuth column.
+
+    The 1-D analogue of `_luminance`, and its complement: luminance is what the retina
+    sees and the retina reaches no descending neuron (§2.2), while this is delivered to
+    LC4/LPLC2, which do. Shares `retina.spread_cols` because it is the same angular blur
+    of the same object, and a second knob for it would be a knob nothing measured.
+    """
+    m = c.mapping
+    if len(c.ex) == 0:
+        return np.zeros(m.columns, dtype=np.float32)
+    spread = float(m.retina["spread_cols"])
+    d = np.arange(m.columns)[None, :] - column(c.ex, m.columns)[:, None]
+    prof = (c.loom[:, None] * np.exp(-(d ** 2) / (2.0 * spread ** 2))).sum(axis=0)
+    return np.clip(prof, 0.0, 1.0).astype(np.float32)
+
+
 SIGNALS: dict[str, Callable[[SignalCtx], float | np.ndarray]] = {
     "luminance": _lum,
+    "azimuth_code": _azimuth_code,
     "loom_L": lambda c: _loom_side(c, "L"),
     "loom_R": lambda c: _loom_side(c, "R"),
     "drive": lambda c: c.drive,
@@ -121,7 +151,7 @@ SIGNALS: dict[str, Callable[[SignalCtx], float | np.ndarray]] = {
 """Signal name (from config) → value. A second game adds entries here and a JSON file;
 `Encoder`, `Decoder`, `Mapping` and every neuron name change by zero lines (§7)."""
 
-VECTOR_SIGNALS = frozenset({"luminance"})
+VECTOR_SIGNALS = frozenset({"luminance", "azimuth_code"})
 """Signals returning one value per azimuth column rather than a scalar."""
 
 
@@ -146,7 +176,33 @@ def photoreceptor_columns(W: sparse.spmatrix, meta: BrainMeta, columns: int,
 
     Costs ~0.08 s on the real connectome. Called once per `Encoder`, never per frame.
     """
-    W = sparse.csc_matrix(W)
+    return _hex_vote(sparse.csc_matrix(W), meta, columns, hex_flip, types)
+
+
+def looming_columns(W: sparse.spmatrix, meta: BrainMeta, columns: int,
+                    hex_flip: dict[str, bool], types: Sequence[str]) -> np.ndarray:
+    """Azimuth column per neuron by the vote over **presynaptic** partners; -1 unassigned.
+
+    The same vote as `photoreceptor_columns` over the other axis of `W`, and the axis is
+    the whole point. `W` is `[post, pre]`, so a CSC column holds a cell's targets and a
+    CSR row holds its sources. A photoreceptor's targets carry hex and a projection
+    neuron's do not — LC4/LPLC2 target hexless central-brain cells — so the postsynaptic
+    vote leaves most of them unassigned while the presynaptic vote, over their
+    hex-carrying medulla inputs, assigns every one (measured, #40).
+
+    What this establishes is an **ordering** of those cells along azimuth and not a
+    calibrated retinotopy: the vote leans on a small share of each cell's input weight
+    and its correlation with soma X is weak and wrong-signed on the right eye.
+    `_sided_deal` consumes the order and discards the absolute value for that reason.
+    Validated where it can be — run on cells that *do* carry hex, it recovers their own
+    value (#40).
+    """
+    return _hex_vote(sparse.csr_matrix(W), meta, columns, hex_flip, types)
+
+
+def _hex_vote(W: sparse.spmatrix, meta: BrainMeta, columns: int, hex_flip: dict[str, bool],
+              types: Sequence[str]) -> np.ndarray:
+    """The |w|-weighted modal hex vote over whichever axis `W`'s format stores."""
     hex1 = meta.ol_hex[:, 0]
     known = np.isfinite(hex1)
     binned = np.where(known, hex1, 0.0).astype(np.int64)
@@ -166,6 +222,111 @@ def photoreceptor_columns(W: sparse.spmatrix, meta: BrainMeta, columns: int,
         if hex_flip.get(str(meta.side[j]), False):
             c = columns - 1 - c
         out[j] = min(max(c, 0), columns - 1)
+    return out
+
+
+CodeMap = tuple[np.ndarray, list[tuple[np.ndarray, int, int]]]
+"""What a code map returns: the azimuth column per cell (-1 where unassigned), and the
+drive groups `_drive_matched` normalises over — (cell mask, column lo, column hi)."""
+
+
+def _sided_deal(base: np.ndarray, sides: np.ndarray, columns: int) -> CodeMap:
+    """Rank each side's cells by `base` and deal them across that side's half of azimuth.
+
+    Two things the shipped scalar sites did separately, in one map. **Side** is preserved
+    exactly as `looming_L`/`looming_R` preserved it — a left cell can only be given a
+    left column — which is what lets one site carry both cues, and it has to be one site
+    (see the module docstring). **Position within the side** is the cells' order under
+    `base` and nothing else: the deal is uniform, so the absolute value of `base` is
+    discarded and only its ordering survives. That is the claim the measurement supports
+    for the anatomical map (#40), and making the code incapable of using more is what
+    keeps the claim and the implementation the same statement.
+
+    Cells whose side is neither L nor R, and cells `base` left unassigned, stay -1 and
+    are reported as `EncodedFrame.unassigned` rather than dropped silently.
+
+    Returns the column per cell and the **drive groups** — each side's cells with the
+    span of azimuth they were dealt across. `_drive_matched` needs the span and not just
+    the cells: a side's drive is set by the strongest threat *in that hemifield*, which
+    is what the scalar site it replaces measured, and reading it off the cells' own
+    columns instead would make total drive sag whenever no cell happened to sit at the
+    threat's column.
+    """
+    half = columns // 2
+    out = np.full(len(base), -1, dtype=np.int16)
+    groups = []
+    for side, lo, hi in (("L", 0, half), ("R", half, columns)):
+        sel = np.flatnonzero((sides == side) & (base >= 0))
+        if sel.size:
+            order = sel[np.argsort(base[sel], kind="stable")]
+            out[order] = lo + np.arange(order.size) * half // order.size
+        groups.append((sides == side, lo, hi))
+    return out, groups
+
+
+def _code_sided_anat(brain: FlyBrain, site: Any, idx: np.ndarray, columns: int,
+                     hex_flip: dict[str, bool], seed: int | None) -> CodeMap:
+    """The connectome's own ordering of the site's cells along azimuth, side-constrained."""
+    base = looming_columns(brain.W, brain.meta, columns, hex_flip, site.types)[idx]
+    return _sided_deal(base.astype(np.int64), brain.meta.side[idx], columns)
+
+
+def _code_sided_random(brain: FlyBrain, site: Any, idx: np.ndarray, columns: int,
+                       hex_flip: dict[str, bool], seed: int | None) -> CodeMap:
+    """The control: the same cells, the same side constraint, the **order** shuffled.
+
+    Not decoration and not dead code. The anatomical map's claim is comparative — that
+    the connectome's ordering of these cells along azimuth carries more than an arbitrary
+    ordering of the same cells at the same drive — and it is only checkable while this
+    arm is runnable (#40 R-new). A recommendation that cannot be re-measured is an
+    assertion.
+
+    A permutation and not a random column per cell: both arms then deal the same uniform
+    set of columns and differ in *ordering alone*, which is the thing being claimed. The
+    probe that measured R-new draws random columns instead, so its control also perturbs
+    the column histogram — a looser control, and the one the published ratio was measured
+    against.
+    """
+    rng = np.random.default_rng(seed)
+    sides = brain.meta.side[idx]
+    return _sided_deal(rng.permutation(len(idx)).astype(np.int64), sides, columns)
+
+
+CODE_MAPS: dict[str, tuple[Callable[..., CodeMap], bool]] = {
+    "azimuth_sided_anat": (_code_sided_anat, False),
+    "azimuth_sided_random": (_code_sided_random, True),
+}
+"""`Site.code` name → (builder, whether it needs a `code_seed`).
+
+A site's own azimuth column per neuron, replacing the photoreceptor vector signals' shared
+`photoreceptor_columns` map. Per-site and not global because the two maps vote over
+opposite axes of `W` and neither is correct for the other's cells."""
+
+
+def _drive_matched(gain: float, shape: np.ndarray, vec: np.ndarray,
+                   groups: list[tuple[np.ndarray, int, int]]) -> np.ndarray:
+    """Spread a coded site's current over its cells without changing how much there is.
+
+    A scalar site injects `gain * v` into each of a side's `n` cells, so its total is
+    `gain * v * n`. A coded site injects the same total, distributed in proportion to
+    `shape` — the two differ only in *where* the current goes, which is the comparison
+    every measurement behind this encoder was run under. The normaliser depends on the
+    shape alone, so looming strength still modulates total drive.
+
+    Per side, not globally, because that is what the site replaces: one side's cells see
+    only their own side's threat, exactly as `looming_L` saw only `loom_L`.
+
+    This is not a refinement. Without it a Gaussian bump delivers roughly a tenth of the
+    shipped current, the descending readouts fall to a few tenths of a hertz, and the
+    whole channel reads as a clean negative result when in fact nothing is driving the
+    brain — which is what happened to the probe this encoder came from (#40).
+    """
+    out = np.zeros(len(shape), dtype=np.float64)
+    for g, lo, hi in groups:
+        w = shape[g]
+        total = float(w.sum())
+        if total > 0.0:
+            out[g] = gain * float(vec[lo:hi].max()) * g.size * w / total
     return out
 
 
@@ -217,15 +378,27 @@ class Encoder:
 
         enabled = [s for s in m.sites if s.enabled]
         vec_types = tuple(dict.fromkeys(t for s in enabled if s.signal in VECTOR_SIGNALS
-                                        for t in s.types))
+                                        and s.code is None for t in s.types))
         cols = (photoreceptor_columns(brain.W, brain.meta, m.columns, m.hex_flip, vec_types)
                 if vec_types else None)
 
-        self._sites: list[tuple[Any, np.ndarray, np.ndarray | None]] = []
+        self._sites: list[tuple[Any, np.ndarray, np.ndarray | None, list | None]] = []
         for site in enabled:
             idx = brain.cells(list(site.types), side=site.side)
-            self._sites.append((site, idx, cols[idx] if site.signal in VECTOR_SIGNALS else None))
+            groups = None
+            if site.code is not None:
+                site_cols, raw = CODE_MAPS[site.code][0](brain, site, idx, m.columns,
+                                                         m.hex_flip, site.code_seed)
+                keep = site_cols >= 0
+                groups = [(np.flatnonzero(g[keep]), lo, hi) for g, lo, hi in raw]
+                groups = [g for g in groups if g[0].size]
+            elif site.signal in VECTOR_SIGNALS:
+                site_cols = cols[idx]
+            else:
+                site_cols = None
+            self._sites.append((site, idx, site_cols, groups))
         self.prosthetic_sites = [s.name for s in enabled if s.prosthesis]
+        self.coded_sites = [s.name for s in enabled if s.code is not None]
 
     # ---------------------------------------------------------------- encoding
 
@@ -235,7 +408,7 @@ class Encoder:
         m = self.mapping
         inject, unassigned = [], 0
 
-        for site, idx, cols in self._sites:
+        for site, idx, cols, groups in self._sites:
             gain = site.gain
             if site.gain_mod == "drive":
                 gain *= 1.0 + m.drive_mod_k * ctx.drive
@@ -247,7 +420,9 @@ class Encoder:
                 assigned = cols >= 0
                 unassigned += int((~assigned).sum())
                 sub = idx[assigned]
-                amounts = (gain * vec[cols[assigned]]).astype(np.float32)
+                shape = vec[cols[assigned]]
+                amounts = (_drive_matched(gain, shape, vec, groups) if groups is not None
+                           else gain * shape).astype(np.float32)
             # #13: one NaN in v silently removes a neuron for the rest of the session, so
             # no site is exempt from this, however trustworthy its signal looks.
             amounts = np.nan_to_num(amounts, nan=0.0, posinf=0.0, neginf=0.0)
@@ -271,7 +446,8 @@ class Encoder:
             inject=inject, luminance=ctx.luminance,
             loom={"L": _loom_side(ctx, "L"), "R": _loom_side(ctx, "R")}, drive=ctx.drive,
             launcher_hp=hp, launcher_x=lx, unassigned=unassigned,
-            prosthetic_sites=list(self.prosthetic_sites), rejected=int(rejected),
+            prosthetic_sites=list(self.prosthetic_sites),
+            coded_sites=list(self.coded_sites), rejected=int(rejected),
         )
 
     def neutral(self) -> EncodedFrame:
