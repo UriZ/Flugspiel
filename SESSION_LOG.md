@@ -2015,3 +2015,42 @@ Commands: `PYTHONPATH=. python tools/spike/reward-substrate.py` (seconds, determ
 - [workflow]: my probe's first `layout-mismatch` state was a no-op stub and the screenshot was identical to the previous state's. A probe that exercises N states should assert the states DIFFER, or a broken arm passes silently and looks like evidence
 - [ui-designer.md]: the spec's three errors were all cases where a stated intent and a stated mechanism disagreed (`dn_order`'s sort vs its pairing purpose; `weapon_bias` listed as injected vs `enabled:false`; the decay's ratio vs its quoted frame count). Asking the designer to state intent and mechanism separately, and to derive the mechanism, would surface these at design time
 - [CLAUDE.md]: the honesty rules worked — "a channel that cannot fire must not look like one that merely is not firing" is what caught the DNpe023 case, because it forced me to check `enabled` on the wire rather than trust the spec's table
+
+---
+### [2026-09-13 13:10] — developer — #7
+**Task**: Implement the dopamine reward loop — `launchers_alive`-keyed events, KC→MBON plasticity, the snapshot block, and the shuffle control that makes any learning claim falsifiable
+**Result**: PARTIAL — everything in scope is implemented and verified except the 3-line `lif.py` §6 aliasing fix, which is held pending TL sequencing on a file shared with `developer-2`
+**Files changed**: src/brain/reward.py (new), src/brain/mapping.py, src/brain/mappings/missile_attack.json, src/server/ws_server.py, tools/spike/reward-shuffle.py (new), tools/spike/reward-substrate.py, tools/spike/reward-cadence.mjs, tools/spike/traces/openloop.json (new), SESSION_LOG.md
+**Commits (local, not pushed)**: `b6811a6`, `b9b47d9`, `58170aa`
+**Key changes**:
+- src/brain/reward.py — `RewardConfig`/`Compartment`/`RewardEvent`/`RewardLoop`, the whole of #7 §4–§5. Events from `launchers_alive` + `session` only, one-shot armed; multiplicative-in-`w0` update over the two compartments' edges, written in place through `brain.W.data` and never by rebinding `brain.W`; `prosthetic_sites` carried inside the same telemetry object as `value`
+- src/brain/mapping.py:38 — one allowlist entry for the `"reward"` block. The spec said `mapping.py` changes 0 lines; `_only` is a closed allowlist and rejected it
+- src/server/ws_server.py — construction in `Runtime.__init__`; `on_state` before the step it changes the input of; `observe` after it; `telemetry()` replacing the `"unimplemented"` literal; `reset()` on `scope in (brain, all)` before recalibration, never on `scope=decoder`. `_track_session` now returns whether the boundary fired, so a frame the socket never took cannot resync the loop twice off one boundary
+- tools/spike/reward-shuffle.py — `--trajectory` (weights only, no LIF), `--direction` (AC6), `--contract` (AC3(ii), AC4, AC5), default (the three arms). Hypotheses, thresholds and the honesty clause live in the header, not in the results
+- tools/spike/reward-substrate.py — the §6 ownership assertion, live and currently failing by design
+
+**Testing** (2026-09-13, real connectome, numba, 16 cores; no new tests — suspended 2026-09-12):
+- `pytest -m "not realdata"` → **194 passed, 11 deselected, 0 skipped** (baseline unchanged)
+- `tests/test_mapping.py tests/test_encoder.py tests/test_decoder.py` → **109 passed, 0 skipped**
+- `reward-shuffle.py --contract` → **12 PASS, 0 FAIL**. Includes AC5(b): the fired-index sequence with `enabled=false` is identical step for step to a run with no `RewardLoop` at all — the criterion that licenses arm C as a control
+- `reward-shuffle.py --direction` → reward 1.0297 > 1.0, punish 0.9703 < 1.0, each compartment moving only on its own valence. PASS
+- `reward-shuffle.py --session 5` → A 242.30±0.27, B 242.70±0.22, C 246.17±0.17 Hz. **H1 TRUE (3.87), H2 FALSE (0.40), H3 FALSE (0.07)**
+- `reward-shuffle.py --session 0` → A 244.67±0.72, B 244.77±0.63, C 245.97±0.41 Hz. **H1 FALSE (1.30), H2 FALSE (0.10), H3 FALSE (0.10)**
+- `reward-substrate.py` → every header number reproduces exactly after `PARTITIONS` 16→8 and `cache=True` (it runs no LIF dynamics)
+- `reward-cadence.mjs --json` → median inter-loss gap 3.42 s, 5 of 10 sessions stalled at the 300 s cap. Shape reproduces; digits moved, as its header warns
+- `--trajectory` on the regenerated stimulus → min `w/w0` 0.822–0.883 on 8 of 10 sessions against §5.6's predicted 0.799–0.854, with `lr` untouched. The tenth stalled after 2 losses (0.9408) and is outside the profile the prediction was made against
+- Cost: `observe()` 0.088 ms/brain step (§5.5 budget 0.081; 2.4% of a 3.6 ms step); `on_state()` 0.135 ms/tick (budget 0.561); `+_apply()` 0.094; `telemetry()` 0.072. Worst-case tick ≈ 0.30 ms, **0.6% of #4's 50 ms contract**
+- Edge counts derived independently from the connectome: reward 5,595, punish 8,429, union 14,024, KC→MBON outside both 47,186 — matching §3.3/§5.1 exactly
+
+**Honesty outcome**: **H3 is FALSE.** Per §9.3 nothing in #7 may be described as learning, training, progress, improvement, performance or score. Eligibility measured at mean 0.9907, spread 0.0007 across all 4,064 KCs — `e ≡ 1` to within 0.07%, so the rule is a per-compartment scalar today. That is #1's parameterisation (R6) and #7 does not touch it.
+
+**Three spec defects found by execution**, all reported on #7: (1) `mapping.py` is not 0 lines, the allowlist rejects the `"reward"` key; (2) §4.2 ("arms at session start", giving the ≤8-vs-7 cap) contradicts §4.3 step 3 ("`armed = False`" on resync) — implemented §4.3 as the normative and more conservative reading, architect's call; (3) §9.2's tail statistic contradicts §5.6's trajectory-minimum prediction for stalled sessions, which is why H1 splits between the two sessions.
+
+**Not done**: `src/brain/lif.py` §6 `copy=True`. Asked for sequencing three times and was not sequenced. `reward-substrate.py` prints `OWNERSHIP FlyBrain.W shares the caller's buffer: True   <- must be False` until it lands.
+
+**Improvement Insights**:
+- [developer.md]: add — **re-verify every "verified by execution" claim in the spec that touches a file you are about to edit.** The architect's `mapping.py`-is-0-lines claim was true when checked and false when built; a closed allowlist had landed in between. Verification has a timestamp and specs do not carry one. Cost me one minute to check and would have cost a QA cycle to discover.
+- [architect.md]: add — **when a spec has a normative section and a prose section, say which wins.** §4.2 and §4.3 disagreed on arming, the difference is one reward event per session, and nothing in the document ranked them. A single "where §N and §M disagree, §N is normative" line would have removed the judgement call entirely.
+- [architect.md]: add — **a pre-registered statistic must be checked against the prediction it will be compared to.** §9.2 pre-registered the tail window; §5.6 predicted the trajectory minimum. On a stalled session those measure different things and H1 flips. Pre-registration is only protective if the statistic and the prediction are the same quantity.
+- [workflow]: **a shared-file gate with no response is a silent stall.** I asked three times over the whole task and finished everything else, but the one unapplied line is the highest-severity item in the issue. A gate request should carry an explicit fallback — "if not sequenced within N, apply it in a single-purpose commit and flag it" — or the safe choice and the complete choice stay in conflict.
+- [CLAUDE.md]: add to the honesty rules — **the disclosure must describe the run it is printed under, not the system in general.** My own spike printed "aiming in this run used the PFL3 prosthesis" in replay modes that run no encoder and no decoder at all. It was a true sentence about the project and a false one about the run, and it took re-reading my own output to catch (`58170aa`).
