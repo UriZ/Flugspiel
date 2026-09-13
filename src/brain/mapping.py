@@ -31,8 +31,12 @@ Y_POLICIES = ("threat", "fixed")
 # selects the default. `"prostesis": true` would ship `aim_bias` injecting at full gain
 # while `EncodedFrame.prosthetic_sites` denied it existed, and #7's honesty clause rests
 # on that flag. A disclosure that fails open is worse than none.
+# `reward` is listed but never read here: `RewardConfig.load` parses it out of the same
+# file. It has to be in the allowlist anyway, because `_only` below rejects any key it
+# does not know and would otherwise refuse the whole mapping (#7 §11 assumed it would be
+# tolerated; the allowlist landed after that was checked).
 TOP_KEYS = ("version", "game", "columns", "max_inject", "hex_flip", "sites", "drive_mod_k",
-            "loom", "retina", "aim", "fire", "weapon")
+            "loom", "retina", "aim", "fire", "weapon", "reward")
 SITE_KEYS = ("name", "types", "side", "signal", "gain", "gain_mod", "prosthesis", "enabled")
 CHANNEL_KEYS = ("types", "tau", "on_hz", "off_hz", "spikes_per_action", "enabled")
 LOOM_KEYS = ("y_ground", "tau", "ttc_min", "side_flip")

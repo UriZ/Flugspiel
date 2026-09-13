@@ -32,5 +32,23 @@
   "fire": { "types": ["DNp01"], "tau": 0.25, "on_hz": 4.0, "off_hz": 1.0,
             "spikes_per_action": 6.0 },
   "weapon": { "types": ["DNg100", "MDN"], "tau": 0.50, "on_hz": 2.0, "off_hz": 0.5,
-              "spikes_per_action": null, "enabled": false }
+              "spikes_per_action": null, "enabled": false },
+  "reward": {
+    "enabled": true,
+    "t_survive": 5.0,
+    "k_event": 1.0,
+    "lr": 0.03,
+    "tau_elig": 1.0,
+    "tau_decay": 300.0,
+    "w_min": 0.1,
+    "w_max": 2.0,
+    "dan_inject": 2.0,
+    "dan_hold": 0.2,
+    "compartments": [
+      { "name": "reward", "dan_types": ["PAM11"], "sign": 1.0,
+        "mbon_types": ["MBON07", "MBON06"] },
+      { "name": "punish", "dan_types": ["PPL101"], "sign": -1.0,
+        "mbon_types": ["MBON25,MBON34", "MBON11", "MBON20", "MBON30"] }
+    ]
+  }
 }

@@ -51,6 +51,7 @@ from fastapi import FastAPI, WebSocket  # noqa: E402
 from src.brain.decoder import Decoder  # noqa: E402
 from src.brain.encoder import Encoder  # noqa: E402
 from src.brain.lif import FlyBrain  # noqa: E402
+from src.brain.reward import RewardLoop  # noqa: E402
 
 PROTOCOL = 1
 MAX_FRAME_BYTES = 131072
@@ -95,6 +96,9 @@ class Runtime:
         self.decoder.calibrate(self.encoder)  # resets brain and decoder itself
         self.brain.reset()
         self.decoder.reset()
+        # Built even when disabled, so a config typo fails here rather than lying dormant
+        # and so the frame's `reward` block keeps its shape either way (#7 §7).
+        self.reward = RewardLoop(self.brain, encoder=self.encoder)
 
         m, brain = self.brain.meta, self.brain
         # Once, never per frame: 27 `flatnonzero` scans cost more than the whole budget.
@@ -244,9 +248,12 @@ class Session:
                               "detail": "brain reset; re-measuring the aim zero",
                               "fatal": False})
             self.rt.brain.reset()
+            # Before recalibrating: the aim zero must be measured on the pristine
+            # connectome, not through whatever efficacy the last session left behind.
+            self.rt.reward.reset()
             self.rt.decoder.calibrate(self.rt.encoder)
             self.rt.brain.reset()
-        self.rt.decoder.reset()
+        self.rt.decoder.reset()  # scope="decoder" leaves learned efficacy alone (#7 §11.4)
         self.detached_reported = False
 
     async def _error(self, code: str, detail: str) -> None:
@@ -275,13 +282,19 @@ class Session:
                 state, self.slot = self.slot, None
                 # Promote before the step, so ack_seq names a state this step injected.
                 self.ack_seq = int(state["seq"])
-                self._track_session(state.get("session"))
+                changed = self._track_session(state.get("session"))
                 frame = enc.encode(state, dec.crosshair_x)
+                # Before the step whose synaptic input it changes (#7 §11.4): after it,
+                # every weight update lands one step late. `changed`, not the sticky
+                # `session_changed` flag, so a frame the socket never took cannot make
+                # the loop resync twice off one boundary.
+                rt.reward.on_state(state, changed)
                 self.c.unassigned = frame.unassigned
                 self.c.rejected += frame.rejected
 
-            fired = brain.step(inject=frame.inject)
+            fired = brain.step(inject=frame.inject + rt.reward.inject())
             dec.observe(fired, dt)
+            rt.reward.observe(fired)
             steps += 1
             if t_first is None:
                 t_first = time.perf_counter()
@@ -307,7 +320,7 @@ class Session:
                 next_t, delay = time.perf_counter(), 0.0
             await asyncio.sleep(delay)
 
-    def _track_session(self, session: Any) -> None:
+    def _track_session(self, session: Any) -> bool:
         """A session change is a restart: the decoder's latches and crosshair are stale,
         and #7 must discard reward across it rather than difference through it. The brain
         is deliberately NOT reset — it is a continuous reservoir, and reseeding it would
@@ -315,11 +328,13 @@ class Session:
         value = session if _is_int(session) else 0
         if self.session is None:
             self.session = value
-            return
+            return False
         if value != self.session:
             self.session = value
             self.session_changed = True
             self.rt.decoder.reset()
+            return True
+        return False
 
     def _frame(self, action: dict, fired: np.ndarray, sim_hz: float) -> dict:
         c = self.c
@@ -331,9 +346,7 @@ class Session:
             "action": action,
             "snapshot": self.rt.snapshot(
                 fired,
-                # #7 owns `value`; #4 promises only the envelope and the boundary flag.
-                reward={"value": 0.0, "source": "unimplemented",
-                        "session_changed": self.session_changed},
+                reward=self.rt.reward.telemetry(self.session_changed),
                 meta={"sim_hz": sim_hz, "dropped": c.dropped, "rejected": c.rejected,
                       "unassigned": c.unassigned, "errors": dict(c.errors)},
             ),
