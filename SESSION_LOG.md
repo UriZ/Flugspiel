@@ -1681,3 +1681,115 @@ Six for six uncaught — none of the new behaviour is test-pinned, because testi
 - [workflow]: the acceptance criteria asked for "every discovered test file declares no tests" — the *all*-empty case. The dangerous case is **one** file emptied, where the global `pass` count stays high and only per-file attribution can see it. A bug report's repro is the symptom that was noticed, not the boundary of the defect; deriving the harder neighbouring case is part of the fix
 - [CLAUDE.md]: the "a green run must be proven" rule tells agents to assert a non-zero test count. That is exactly what would *not* have caught this — five empty files report a non-zero count. The rule needs a third clause: the count must be attributable per file, or the tool that reports it must itself be verified by truncation
 - [developer.md]: guards deserve false-positive cases as a matter of course. I added `describe`/`it`, nested subtests and late declaration only because a guard that fails a healthy suite is worse than the hole it closes — that reasoning should be standing practice, not a judgement call per task
+
+---
+### [2026-09-13 01:20] — judge — #2 (feature gate; covers `09d419f`, `d8b995d`, and #23)
+**Gate type**: final / feature (`GATE_FREQUENCY: feature`) — read every stage: architect v2 + v2.1 + its gate, implementation, code review + fixes, the post-code-review gate (mine, 9/10), and all four QA comments
+**Verdict**: **PASS**
+**Score**: 9/10 — threshold 7/10
+**Comments**: https://github.com/UriZ/Flugspiel/issues/2#issuecomment-5649032702 and the addendum #issuecomment-5649035082
+**Gate boundary**: opened at `ab6b0ab`, closed at `de5db74`. Four commits landed mid-gate (`c70a37b`, `19c1f59`, `a732693`, `de5db74`); two touched `tools/run-tests.mjs`, none touched `src/game`, `tests/game`, `tests/helpers`, `game.html` or `package.json`. Every figure posted is labelled with its HEAD and loadavg (spread 4.03–14.33 across one gate).
+
+**#23 — the real number is 38, and it always was.** Three independent lines: 38 `test(` declarations counted across the five files (9+12+10+1+6); a pristine `git archive HEAD` extraction with **no `node_modules`** runs 38/38 exit 0 at both `ab6b0ab` and `a732693`; and the *fixed* runner reports the same 38. **Every prior "38 pass" stands — QA's, the TL's and mine.** The hole was real and worse than filed: QA's all-five-files case exited 0 at `# tests 5`, but **one** file truncated (12 tests gone) also exited **0** at a green `# tests 27` — my case, the realistic regression, which QA's all-or-nothing mutation could not see. Fixed mid-gate by `a732693`+`de5db74`; I verified the fix closes B **and C**, keeps D and E, and leaves the true count untouched. Ruling: in scope for #2 (§6.1's own deliverable), correctly Low, did not block, now closed.
+
+**`d8b995d` — the tracked tree IS the evaluated tree.** `git status --porcelain` empty over #2's paths; `git ls-files src/game` 55 == `find` 55; clone-equivalent extraction runs 38/38; and **all 48 committed vendor blobs are byte-identical to upstream `458c3fb` by git blob SHA-1** (independent of our manifest and of the working tree — the strongest form of AC6). Recorded honestly: I cannot prove the committed `src/game/*.js` are byte-for-byte what I read at 12:13; the gap is closed by re-verification, not provenance.
+
+**`09d419f` — behaviour PASS, coverage zero.** Reproduced the #7 worst case myself against the real `Game`: 5 Hz consumer + one-frame gameover → `{alive:1,session:1}` → `{alive:7,session:2}`, **0 gameover samples in the stream**, session the only field that moves; works with emission never started. Re-derived the uniqueness argument: `alive = true` is assigned at exactly one site (`entity.js:13`) out of 40 `.alive` assignments. But `grep session tests/game/` returns nothing and three mutations (delete `++`, pass 0, drop the field) are **38/38 green**; MS1 demonstrably unflags the 1→7 jump.
+
+**Key gaps (none blocking)**:
+1. `weapon_switch` highest-index-wins has **neither a comment nor a test** — third gate running. Mutating `pressKey` from `add` to overwrite flips it to last-wins ({5},{3}→3; {6},{0}→0; {1},{4},{2}→2) with 38/38 green.
+2. The `session` counter ships untested (above). Recorded, not scored.
+3. A detached bridge accepts `startEmitting()` and reports `isEmitting()===true` while delivering 0 emits over 120 frames — same shape as MF1, weaker. QA called it cosmetic and didn't file; I rule it should be **filed against #7**, Low.
+4. Game-clock vs wall-clock not on the wire (20.00 Hz game / 1.39 Hz wall at 8× throttle) — correctly #4/#7's contract, not #2's defect.
+
+**Corrections issued**:
+- The brief cited criteria.md's escalating row as covering "a comment stating a mechanism the code lacks". That row is *"Comments state mechanisms the code has"* — it targets **wrong** comments in **security** code. The `weapon_switch` gap is the inverse (code has a mechanism no comment states) in game code. **The escalation does not apply**; it scores under Developer criterion 10 (Medium), noted not blocking.
+- Resolved the suspension tension explicitly: the testing suspension removes the obligation to *have* tests; it does not license a runner that *misreports* the tests that exist. #23 was the second, so it was judged on its merits — and it cost nothing because the count was genuine throughout. Criterion 8 survivors are reported, not scored.
+
+**Mutation battery**: 6 on the tracked game code, each with `try/finally` restore and a per-mutation digest assertion; 8/8 files verified against pre-mutation digests at the end, `git status --porcelain` empty. #2's core discriminates (backlog clamp removed → 2 red; emit guard loosened → 1 red). Four survivors, each **shown** to change observable behaviour before being called a gap.
+
+**Improvement Insights**:
+- [criteria.md]: state precedence — while testing is suspended, Developer criterion 8 is reported, not scored. Its only remedy is a test, so scoring it re-imposes the suspended obligation through another row.
+- [criteria.md]: the security row "Comments state mechanisms the code has" is being read as covering the inverse case. Add the missing direction under Developer criterion 10 or scope the security row explicitly to wrong comments.
+- [qa.md]: when mutation-testing a guard, break the guarded thing **by half, not only entirely** — the all-files truncation passed through; the one-file case is what ships.
+- [judge.md]: record `git rev-parse HEAD` at the start **and** end of a gate and label every measurement with it. HEAD moved twice here and a file under measurement was rewritten mid-run between two implementations that print identical output.
+- [workflow]: the loadavg-with-every-timing convention is working; the missing half is **HEAD-with-every-timing**.
+- [tl.md]: second time a deliverable reached a judge in a state git had no record of (#1: three unreviewed commits; #2: 55 untracked files). A pre-gate assertion — `git status --porcelain <issue paths>` empty **and** a `git archive HEAD` extraction that runs — catches both in under a minute.
+
+---
+### [2026-09-13 03:20] — architect — #7
+**Task**: Implementation spec for the dopamine reward loop (PAM11/PPL101 → KC→MBON plasticity), keyed only on `launchers_alive`, with the toggle, the prosthesis disclosure and a shuffle control that makes any learning claim falsifiable
+**Result**: COMPLETED — spec posted as 5 comments on #7 (skeleton + [1/4]..[4/4] + a §8 addendum)
+**Key decisions**:
+- **Reward cannot be "interception".** `launchers_alive` is monotone non-increasing, so the only positive fact it can state is survival. Reward = survived `t_survive` s since the last loss, **one-shot armed** per interval. One-shot arming is not cosmetic: 4 of 20 headless open-loop sessions stalled (one at 300 s with 4 launchers alive, three at 600 s), so a repeating survival reward is unbounded per session.
+- **The plasticity third factor is the commanded level, not the measured DAN rate** — both DAN populations are pinned at their firing ceiling.
+- **Compartments derived from connectivity**, not assumed: PAM11→MBON07 (0.286 of MBON07's input), PPL101→MBON25&34 (0.129) / MBON11 (0.098). Union 14,024 edges of 61,210 KC→MBON — 4.4× cheaper than the whole block and it enforces "no global training" by construction.
+- **`lr = 0.03`**, fixed by simulating the detector against five measured loss streams and mapping the result through a dose-response measured *before* the rule existed. The response is convex near baseline — linear interpolation from the ×0.5 point over-predicts a small change by ~10×.
+- **`copy=True` in `FlyBrain.__init__`** (3 lines in `lif.py`), with the `shares_memory` proof added to a committed spike rather than left as a comment.
+- **AC7 added**: the shuffle control with three pre-registered hypotheses, two of which are predicted FALSE, plus an honesty clause binding every downstream artefact.
+
+**Measurements taken (all reproducible; deterministic unless noted)**
+Commands: `PYTHONPATH=. python tools/spike/reward-substrate.py` (seconds, deterministic) · `PYTHONPATH=. python tools/spike/reward-reachability.py` (~6 min, rates deterministic per seed, only throughput is load-sensitive) · `node tools/spike/reward-cadence.mjs` (game not seeded — shape reproduces, digits do not).
+- PAM11 **15** (L8/R7, all dopamine), PPL101 **2** (L1/R1) — the issue's counts are exactly right.
+- KC 4,064 / MBON 97 / KC→MBON **61,210 nnz**, sum |w| 56.178, all strictly positive (3.6e-05 … 1.3e-02).
+- **PAM11 and PPL101 fire on EVERY step** at baseline; injecting +2.0 or +5.0 leaves PAM11 at exactly the 750.00 Hz ceiling. AC1/AC2 as written are unfalsifiable.
+- **4,064 of 4,064 KCs fire every step**, seed sd 0.00. Root cause: 56% of KC input is KC→KC against 9.3% from APL ⇒ loop gain ≈ 3.0×(0.56−0.093) ≈ 1.4 > 1. Globally 7,543/166,700 neurons saturate; KCs are 54% of them.
+- **MBON output does not reach the game.** 170/1314 DNs receive any MBON input, mean fraction 0.00064. **DNp01 = 0.0000**, DNg100 = 0.0000, DNa02 = 0.0065/0.0039. Dose-response, 5 seeds: MBON25,MBON34 42.37±1.43 (×0) → 140.37±2.20 (×0.5) → 246.10±0.38 (×1) → 284.57±0.53 (×2), while DNp01 stays 17.60–17.83 ±0.2–0.4 across the whole range.
+- Local slope near baseline: ×0.95 245.20±0.41, ×0.93 244.67±0.57, ×0.90 243.93±0.48, ×0.86 243.00±0.46, ×0.80 241.17±0.12.
+- 78/97 MBONs are rate-saturated. PAM11's compartment (MBON07) is at ceiling ⇒ **potentiation has zero headroom**; PPL101's MBON25,MBON34 (fire fraction 0.701) is the only graded observable.
+- Open-loop game, 20 sessions: passive play always loses all 7 launchers with score 0. Inter-loss gaps N=70 median 5.40 s / N=67 median 4.65 s. One-shot R/P median by `t_survive`: 2→0.86, 3→0.71, 4→0.57, **5→0.57**, 6→0.43, 8→0.43.
+- Cost (load-sensitive, single-process): update tick over 14,024 edges **0.561 ms** (1.1% of #4's 50 ms contract); eligibility per brain step **0.081 ms** compact vs 0.144 ms via the shared mask — 1.8× apart and in the hot loop.
+- `np.shares_memory(caller.data, FlyBrain.W.data)` **True** today, **False** with `copy=True`. In-place `brain.W.data` writes reach both kernels. `Mapping._build` tolerates an unknown top-level `"reward"` key ⇒ `mapping.py` changes 0 lines.
+
+**Corrections to the issue / backlog**: PAM11/PPL101 counts held exactly; "fire on interception/damage" failed twice over (unfalsifiable rate + undefinable event); AC6's "reward strengthens, punishment weakens" contradicts stonkfly's anti-Hebbian rule (Huang & Luo 2024 depresses in *both* compartments); stonkfly's disclaimer is real and stronger than the paraphrase, and they run the **same** MaleCNS v1.0 dataset with 7,835 KC→MBON07/MBON11 edges; the `session` hole is real and already fixed by #4; the `W` aliasing is real.
+**Spikes promoted**: `tools/spike/reward-substrate.py`, `tools/spike/reward-reachability.py`, `tools/spike/reward-cadence.mjs` — all with expected output in the header.
+**Spec posted to**: GitHub issue #7, comments [skeleton], [1/4], [2/4], [3/4], [4/4], [§8 addendum]
+**Label I believe is next**: `developer` (remove `architect`). Not set by me.
+**Cross-issue finding for the TL**: KC saturation (R6) belongs to #1's parameterisation. It makes #7's eligibility trace degenerate and caps what any learning rule on this brain can do. Fixing it would invalidate every measured number in #3 and #4 and must not be smuggled into #7.
+
+**Improvement Insights**:
+- [architect.md]: add — **measure the readout's noise floor and its local slope, not just its range.** The ×0→×2 sweep suggested a 10× larger effect near baseline than the ×0.95…×0.80 sweep actually shows. Had I written the AC from the wide sweep, `lr = 0.01` would have been specced and the criterion would have sat at 2–3 sd instead of 7–12. Rule: for any numeric AC, measure the observable **at the operating point the rule will actually reach**, not at the extremes.
+- [architect.md]: add — **run the third-party reference before citing the backlog's paraphrase of it.** `gh api repos/OWNER/REPO/contents/PATH --jq .content | base64 -d` needs no clone. stonkfly's own docs contained the exact failure mode I had just measured ("endogenous dopamine activity can also drive the rule") and the fact that AC6's sign contradicts the biology it cites. The backlog's one-line paraphrase carried neither.
+- [architect.md]: add — **verify the game, not only the brain.** The stall finding (4 of 20 sessions alive at the cap) came from running the vendored `Game` headless via `tests/helpers/dom-stub.js`, and it changed the reward definition from "repeating" to "one-shot". A spec written from the brain measurements alone would have shipped an unbounded reward.
+- [workflow]: the skeleton-first rule worked — five comments, nothing held in context, and the §8 addendum slotted in cleanly after #3's QA landed mid-run. Worth extending: **an architect should re-read `SESSION_LOG.md`'s tail before the final comment**, since a concurrent QA run produced the single most useful number in my spec (the 0.671 prosthesis ratio) forty minutes after I started.
+- [criteria.md]: Architect row 8 asks for real-brain vs synthetic assertability per criterion. On #7 the more useful split was a third category — **criteria that are assertable but whose expected result is negative** (AC7's H2 and H3). A spec that predicts a null and says what a *positive* would mean is stronger than one that only lists what should pass. Suggest adding that to row 8's wording.
+
+---
+### [2026-09-13 12:20] — developer — #25, #22, #26 (+ correction on #4)
+**Task**: Fix the fire-latch defects — anti-correlated fire rate under sustained looming (#25), the spurious fire after `Decoder.reset()` (#22), and `Encoder.encode` raising on malformed container types (#26); plus make an unknown key in a mapping config fail at load.
+**Result**: COMPLETED
+**Files changed**: `src/brain/decoder.py`, `src/brain/encoder.py`, `src/brain/mapping.py`, `src/brain/mappings/missile_attack.json`, `tests/test_decoder.py`
+**Commits**: `cf5afcf` (#26 + strict keys), `cf4aa70` (#25 + #22). Local only, not pushed.
+
+**Key changes**:
+- `decoder.py:235-268` — `_schmitt()` → `_trigger()`. The Schmitt band is unchanged; above the rising edge the channel integrates `(rate − off_hz)·dt` and emits one more action per `spikes_per_action` pooled spikes, carrying the remainder (capped at one spare) so the action rate follows brain time rather than the decode rate. `spikes_per_action: null` restores #3 §3.5 exactly and is what `weapon` ships.
+- `decoder.py:85-108` — `reset()` no longer clears the EMAs, latches or the integrator. Those are brain-derived and #4 §4.3 deliberately does not reset the brain; re-converging the EMA from zero manufactured the rising edge in #22. `reset(readout=True)` is for callers that also reset the brain (`__init__`, `calibrate`). `src/server/ws_server.py` needs no change and was not touched.
+- `mappings/missile_attack.json:32-35` — `fire.on_hz` 3.0 → 4.0 and `fire.spikes_per_action: 6.0`; `weapon.spikes_per_action: null`.
+- `encoder.py:169-186` — new `_list`/`_obj` helpers alongside `_finite`, applied to `missiles`, `launchers`, `base` and `state` itself; `decoder.py:126-127, 251-252` the same for `state` and `missiles`.
+- `mapping.py:29-42, 180-186` — `TOP_KEYS`/`SITE_KEYS`/`CHANNEL_KEYS`/`LOOM_KEYS`/`RETINA_KEYS`/`AIM_KEYS` and `_only()`; an unknown key anywhere in a mapping now raises `MappingError` at load.
+
+**Measurements** (2026-09-13, real brain `data/weights.npz`, `backend=numba`, `seed=64`, 120 s of brain time per row, decode 16.7 Hz, one missile at `x=0.2, y=0.4`; harness `/private/tmp/.../scratchpad/{capture,sweep2,live_verify,reset22,reset22b}.py`):
+- **Baseline re-derived under the new kernel** (`63c1c0a`, `PARTITIONS` 16→8 + `cache=True`): DNp01 0.08 / 2.29 / 11.87 / 17.77 Hz at `loom_L` 0.000 / 0.112 / 0.447 / 1.000, against QA's 0.08 / 2.25 / 11.88 / 17.68. **The kernel change does not move DNp01**; QA's #25 figures stand.
+- fires/min, **before** → **after**: 5.0 → **0.0** (empty sky), 56.0 → **39.5**, 0.5 → **108.5**, 0.5 → **168.0**. Monotonically non-decreasing. Live closed loop and replay of the captured trains agree exactly.
+- `spikes_per_action` sweep at `on_hz 4.0`: monotone for 4–16, **non-monotone from 18 up**; shipped 6.0 has ~3× margin. (An earlier version of the #25 comment put that bound at 12 from a stale pre-carry sweep — corrected on the issue.)
+- `on_hz` 3.0 → 4.0: one isolated spike lifts a `tau=0.25` EMA to `(1−exp(−dt/tau))/dt = 3.844 Hz`, so 3.0 armed on a single stray spike from a 2-neuron population. 4.0 takes the empty-sky rate to 0 and leaves the threat rows untouched.
+- #22 under the original edge-only config, three decoders on one spike stream: `control` 0 fires after the reset, `fixed` **0**, `old` (pre-fix) **1 at tick 0**. Under the shipped config `fixed`'s 40-tick action sequence is bit-identical to `control`'s, hot and cold.
+- #26 against a live `ws_server --port 8931`: all three killer frames get a normal `frame` reply, connection stays OPEN, zero tracebacks in the server log.
+
+**Testing**: testing is suspended — no new tests. Named collected sets, real output, **zero skips**:
+`tests/test_mapping.py + test_encoder.py + test_decoder.py` → **109 passed**; `-m "not realdata"` → **194 passed, 11 deselected** of 205; `tests/test_brain_loop.py` → **5 passed** in 223 s; `npm test` → **38 pass, 0 fail, 0 skipped**. Two existing tests pinned the defect and were repaired: `test_fire_edge_from_spike_train` → `test_fire_sustains_under_a_held_burst` (it asserted a held burst fires exactly twice — that assertion *is* #25), and `test_decode_rate_independent_of_step_rate` (`counts == [1, 1]` was decode-rate independence only because the old rule fired once per episode; now compares fires over equal brain time, 39 vs 39).
+
+**Corrections to the task as given**:
+- **`"prostesis"` is not misspelled in the shipped config.** All three `prosthesis` keys in `missile_attack.json` are correct and always have been (`git log -S prostesis --all` is empty). QA raised it as a hypothetical in its Gap-5 section and it was carried forward as fact. **No undisclosed prosthesis is shipping.** The underlying fail-open defect is real and is fixed.
+- **I was not the only agent writing the tree.** `ed36dc8` ("Measure #6's canvas model on the real connectome layout") landed on `brain-engine` on top of my commits during the run. It touches only `tools/spike/`, so it is disjoint from my files, but the "you are the only agent running" premise did not hold.
+
+**Cross-issue findings for the TL (not fixed — not my lane)**:
+- **#27 likely has the same root cause as #25's `on_hz`.** `weapon` has `tau = 0.5`, so its one-spike EMA step is **1.961 Hz** against `on_hz = 2.0` — a 2 % margin. That is not a threshold, and it is a strong candidate for "documented inert, measured 5–16 switches/min".
+- **`ws_server.py:246`/`:248`** reset the brain and then the decoder; they are correct as they stand but would read better as `reset(readout=True)`. `:322`/`:386` must keep the default. Out of my scope.
+- **#25 AC3 conflicts with a standing TL rule.** The AC asks for the measured numbers in `decoder.py`'s module docstring; the TL's rule is "no measured numbers in docstrings or comments". I followed the standing rule and put them on the issue and here. Needs a TL/judge call.
+
+**Improvement Insights**:
+- [developer.md]: add — **when a task brief states a defect as fact, verify the artefact before fixing it.** "`prostesis` is misspelled in `missile_attack.json`" was promoted to a must-fix from a QA hypothetical. One `grep` disproved it. CLAUDE.md already says this for `BACKLOG.md` and issue descriptions; it needs to cover TL task briefs too, which are written from the same memory.
+- [developer.md]: add — **do not put a number in an issue comment that you did not measure under the configuration you shipped.** I carried a `spikes_per_action: 12` row from a sweep taken at the old `on_hz` and before the charge-carry fix into a table labelled as the final sweep, and had to post a correction. Rule: every row of a results table gets re-run against the final code, or gets deleted.
+- [workflow]: **capture the spike train once, then sweep the readout rule offline.** Each 120 s brain-time condition costs ~27 s of wall time; the six-condition capture ran once and then fed ~40 parameter combinations in under a second each, calling the *real* `Decoder._trigger` unbound on a three-field shim so nothing was reimplemented. The live closed-loop run then reproduced the replay column exactly, which is what makes the cheap sweep trustworthy. Worth naming as the standard pattern for tuning any brain readout.
+- [CLAUDE.md]: the "you are the only agent running" claim in a task brief is not verifiable by the receiving agent and was wrong here. Suggest agents `git log --oneline HEAD@{1}..HEAD` (or compare against the SHA in their brief) before reporting a final digest, and report any commit they did not make.
