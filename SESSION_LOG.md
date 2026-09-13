@@ -2109,3 +2109,34 @@ Commands: `PYTHONPATH=. python tools/spike/reward-substrate.py` (seconds, determ
 - [workflow]: my new "states must render differently" assertion fired on its first run — and it was a FALSE POSITIVE, because two input encodings of the same state correctly render alike. A distinctness check is only meaningful once the expected equivalence classes are written down; without them it either passes vacuously or flags correct behaviour. Worth stating whenever this pattern is recommended
 - [workflow]: the TL's message described this as an additive contract change, and the honest report is that it found an existing routing bug — `source:"disabled"` reached the live treatment. Forwarding a future-shape change is also a test of the current branch logic, and it is worth saying so when it turns one up
 - [qa.md]: `qa-5`'s finding cited a line number in a lookup table rather than the render path, and the treatment it asked for was already present three functions away. The finding was still right about the outcome — a misleading number on screen — so a QA report that leads with the observable symptom rather than the suspected line would have been actionable faster
+
+---
+### [2026-09-13 14:05] — developer — #7, #13, #24
+**Task**: Close out #7 after TL sequencing released `lif.py` — apply the §6 aliasing fix, act on #13's write-site finding, record the §4.2/§4.3 ruling, and fold in two TL-approved #24 edits
+**Result**: COMPLETED
+**Files changed**: src/brain/lif.py, src/brain/fingerprint.py, src/brain/reward.py, SESSION_LOG.md
+**Commits (local, not pushed)**: `568ae78`, `10dc238`, `b4e73b4`
+**Key changes**:
+- src/brain/lif.py:203 — `copy=True`, so each `FlyBrain` owns its weight buffer. Re-read `__init__` first, per the TL: `LIFParams` gained eager validation and the constructor gained seed/inject checks in `a99ca9d`, and the fix sits after all of them
+- src/brain/lif.py (class docstring) — #24 AC1. The "~1e-7 relative" figure described a single addition and was being read as a bound on a trajectory; the old wording invited the cross-backend spike comparison it existed to warn against. No numbers in the replacement
+- src/brain/lif.py — `seed` as a read-only property; `fingerprint.py` was reading `brain._seed` across a module boundary
+- src/brain/reward.py `_apply` — `np.isfinite(...).all()` between the clip and the write, plus a construction-time finite-and-positive check on the baseline weights as the induction base case (#13)
+- src/brain/reward.py `_resync` — the §4.2-vs-§4.3 arming decision recorded with its reason, at the line a reader will question
+
+**Testing** (2026-09-13, real connectome, numba):
+- `pytest -m "not realdata"` → **194 passed, 11 deselected, 0 skipped**
+- `reward-shuffle.py --contract` → **12 PASS, 0 FAIL**
+- `reward-substrate.py` ownership assertion flipped **True → False**, which is the proof the aliasing fix works rather than a claim that it does
+- `python -m src.brain.fingerprint --check` → `trajectory lock ok (constants and spike digest)`. #24's lock pins the spike digest on the real brain, so `copy=True` is confirmed bit-level behaviour-neutral
+- AC7 battery re-run on session 5 reproduces **bit-identically**: A 242.30±0.27, B 242.70±0.22, C 246.17±0.17; H1 3.87 TRUE, H2 0.40 FALSE, H3 0.07 FALSE. Every number in the earlier comment stands
+- #13 guard forced with a poisoned eligibility trace: it raises and **`W` is untouched after the refusal** — the check sits between the clip and the write, so a bad value never lands. `np.clip` propagates a NaN rather than bounding it, so the pre-existing clip was not already this check
+- Cost with the guard: `_apply` 0.094 → 0.154 ms on the event path; worst-case decode tick ≈ 0.36 ms, **0.7% of #4's 50 ms contract**; a tick with no event unchanged at ≈ 0.21 ms
+
+**Rulings recorded**: §4.3 is normative and §4.2's "and at session start" is superseded — the stated cap is **≤ 7 rewards against exactly 7 punishments**, not ≤ 8, and §4.4's R/P sweep overstates R by one per session (`t_survive = 5.0` unaffected). The trajectory minimum becomes the headline statistic and the tail is reported alongside it; `min w/w0` is 0.8240 and 0.8261 on the two sessions, both inside §5.6's predicted 0.799–0.854, so the update is present and on-prediction in both and only the tail statistic disagrees.
+
+**Improvement Insights**:
+- [CLAUDE.md]: add to the honesty rules — **when you had a choice of which measurement to report, say that you had it.** I ran a short session and a stalled one; reporting only the short one would have been true, on the pre-registered statistic, and undetectable. "I did not pick the favourable session" is worth nothing unless the reader learns a choice existed.
+- [developer.md]: add — **a guard belongs between the computation and the write, not after the array is mutated.** Both cost the same here and only one of them means the corrupt value never lands. Verify it by forcing the failure and then asserting the target is *unchanged* — "it raised" and "it did not write" are different claims.
+- [developer.md]: add — **`np.clip` propagates NaN rather than bounding it.** A clip reads like a sanitiser and is not one. Any place the codebase clips a value it then trusts is a place to check.
+- [architect.md]: `copy=True` was verifiable by a one-line runnable assertion in a spike, and that assertion is what made the fix reviewable across a three-way hand-off — it printed True before and False after, with nobody having to reason about scipy's aliasing rules. Prefer specifying a **runnable assertion over a described invariant** wherever the invariant is one expression.
+- [workflow]: the shared-file gate worked but cost a full task cycle of latency; four requests crossed with three green lights. A gate on a file that is *already clean and committed* could be released by the owner-agent's completion rather than by a round trip through the TL.
