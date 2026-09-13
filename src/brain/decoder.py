@@ -17,8 +17,10 @@ Three readout channels, all named in config:
   still reachable with `spikes_per_action: null`, but it is wrong for a command neuron
   under sustained input — real looming holds DNp01 far above `off_hz` for the whole
   approach, so the edge never recurs and the fly goes silent exactly when a missile is
-  about to land (#25). At an empty sky the EMA rarely reaches `on_hz` at all and the
-  integrator is cleared whenever it drops out of the band, so rest stays quiet.
+  about to land (#25). Rest stays quiet for one reason only: `on_hz` is set above the
+  EMA step a single isolated spike produces, so one stray spike from a small population
+  cannot arm the channel. Clearing the integrator on release does **not** contribute to
+  that — see `_trigger` (#31).
 * **weapon** — Schmitt on the pooled DNg100+MDN rate, advancing a weapon ring. **Ships
   `enabled: false`**, so the rate is measured and published as telemetry and nothing acts
   on it. No site injects into either type — DNg100 is not drivable at all on the real
@@ -153,6 +155,7 @@ class Decoder:
         # synchronous, and re-offering forever would spam the game.
         self._pending = None
         before = dict(self._latched)
+        before_charge = dict(self._charge)
 
         dt, self._brain_dt = (self._brain_dt or dt_decode), 0.0
 
@@ -182,7 +185,8 @@ class Decoder:
             action["weapon_switch"] = weapon_index
 
         if fire or weapon_index is not None:
-            self._pending = {"latched": before, "weapon": weapon_index, "fired": bool(fire)}
+            self._pending = {"latched": before, "charge": before_charge,
+                             "weapon": weapon_index, "fired": bool(fire)}
         self.stats["actions"] += 1
         self.stats["fired"] += bool(fire)
         self.stats["weapon_switches"] += weapon_index is not None
@@ -206,7 +210,13 @@ class Decoder:
             return
         if reason == "launcher_dead" and pending["weapon"] is not None:
             self._dead_weapons.add(pending["weapon"])
-        self._latched.update(pending["latched"])  # re-offer the edge next tick
+        # Both halves of the trigger's state, not just the latch. Reverting `_latched`
+        # alone re-offers an *edge* fire, because the rising edge recurs — but a
+        # charge-driven fire had already spent the charge that bought it, so it was
+        # silently dropped while `stats` recorded the revert (#31). The propose/commit
+        # protocol exists to make those two cases symmetric.
+        self._latched.update(pending["latched"])
+        self._charge.update(pending["charge"])
         self.stats["fired"] -= pending["fired"]
         self.stats["weapon_switches"] -= pending["weapon"] is not None
 
@@ -292,6 +302,13 @@ class Decoder:
         if per is None:
             return rising
         if not hot:
+            # Defensive, and **cannot currently change behaviour**: a hot run can only
+            # begin on a rising edge, and that branch overwrites the charge outright, so
+            # nothing a cold period leaves behind is ever read (#31, proven by execution
+            # against a variant with this line removed). It is kept because it is what
+            # makes "charge does not survive a cold period" true by construction rather
+            # than by the accident of the line below — change that line to preserve the
+            # charge across an edge and this one becomes load-bearing immediately.
             self._charge[key] = 0.0
             return False
         self._charge[key] = per if rising else \
