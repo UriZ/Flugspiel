@@ -34,7 +34,7 @@ Y_POLICIES = ("threat", "fixed")
 TOP_KEYS = ("version", "game", "columns", "max_inject", "hex_flip", "sites", "drive_mod_k",
             "loom", "retina", "aim", "fire", "weapon")
 SITE_KEYS = ("name", "types", "side", "signal", "gain", "gain_mod", "prosthesis", "enabled")
-CHANNEL_KEYS = ("types", "tau", "on_hz", "off_hz", "spikes_per_action")
+CHANNEL_KEYS = ("types", "tau", "on_hz", "off_hz", "spikes_per_action", "enabled")
 LOOM_KEYS = ("y_ground", "tau", "ttc_min", "side_flip")
 RETINA_KEYS = ("spread_cols",)
 AIM_KEYS = ("types", "tau", "dead", "k_turn", "zero", "invert", "y_policy", "y_default")
@@ -67,6 +67,7 @@ class Channel:
     on_hz: float
     off_hz: float
     spikes_per_action: float | None  # pooled spikes above off_hz per repeat; None = edge only
+    enabled: bool                    # False: the rate is still measured, never acted on
 
 
 @dataclass(frozen=True)
@@ -247,7 +248,8 @@ def _channel(entry: Any, where: str) -> Channel:
     return Channel(types=_types(entry.get("types"), where), tau=_num(entry, "tau", where, low=1e-9),
                    on_hz=on_hz, off_hz=off_hz,
                    spikes_per_action=None if per is None
-                   else _num(entry, "spikes_per_action", where, low=1e-9))
+                   else _num(entry, "spikes_per_action", where, low=1e-9),
+                   enabled=bool(entry.get("enabled", True)))
 
 
 # ------------------------------------------------------- geometry shared by both modules

@@ -37,6 +37,20 @@ def dec():
     return d
 
 
+@pytest.fixture
+def wdec():
+    """A decoder with the weapon channel turned on.
+
+    The shipped config turns it off (#27): nothing injects into DNg100/MDN, and the band
+    sat inside the channel's own resting EMA, so it switched launcher on network activity
+    alone. The mechanism still has to work for whoever wires a real signal to it, so D9
+    tests it here rather than through the default config.
+    """
+    d = Decoder(toy_brain(), Mapping.load(cfg(weapon={**cfg()["weapon"], "enabled": True})))
+    d.aim_zero = 0.0
+    return d
+
+
 def state(missiles=(), weapon=0) -> dict:
     return {"phase": "playing", "weapon": weapon, "base": {"x": 0.5, "health": 1.0},
             "launchers": [], "interceptors": [],
@@ -245,43 +259,43 @@ def test_detached_is_terminal(dec):
 # --------------------------------------------------------------------------- D9
 
 
-def test_weapon_ring_cycles(dec):
-    dec.rates["weapon"] = 50.0
-    assert dec.decode(state(weapon=2), 0.05)["weapon_switch"] == 3
-    dec.on_result({"ok": True})
-    dec.rates["weapon"] = 0.0
-    dec.decode(state(), 0.05)
-    dec.rates["weapon"] = 50.0
-    assert dec.decode(state(weapon=6), 0.05)["weapon_switch"] == 0, "wraps"
+def test_weapon_ring_cycles(wdec):
+    wdec.rates["weapon"] = 50.0
+    assert wdec.decode(state(weapon=2), 0.05)["weapon_switch"] == 3
+    wdec.on_result({"ok": True})
+    wdec.rates["weapon"] = 0.0
+    wdec.decode(state(), 0.05)
+    wdec.rates["weapon"] = 50.0
+    assert wdec.decode(state(weapon=6), 0.05)["weapon_switch"] == 0, "wraps"
 
 
-def test_weapon_ring_skips_dead(dec):
-    dec.rates["weapon"] = 50.0
-    assert dec.decode(state(weapon=0), 0.05)["weapon_switch"] == 1
-    dec.on_result({"ok": False, "reason": "launcher_dead"})
-    assert dec.decode(state(weapon=0), 0.05)["weapon_switch"] == 2
-    dec.on_result({"ok": False, "reason": "launcher_dead"})
-    assert dec.stats["weapon_switches"] == 0, "a rejected switch never counts as fired"
+def test_weapon_ring_skips_dead(wdec):
+    wdec.rates["weapon"] = 50.0
+    assert wdec.decode(state(weapon=0), 0.05)["weapon_switch"] == 1
+    wdec.on_result({"ok": False, "reason": "launcher_dead"})
+    assert wdec.decode(state(weapon=0), 0.05)["weapon_switch"] == 2
+    wdec.on_result({"ok": False, "reason": "launcher_dead"})
+    assert wdec.stats["weapon_switches"] == 0, "a rejected switch never counts as fired"
 
     for _ in range(WEAPONS):
-        msg = dec.decode(state(weapon=0), 0.05)
+        msg = wdec.decode(state(weapon=0), 0.05)
         if "weapon_switch" in msg:
-            dec.on_result({"ok": False, "reason": "launcher_dead"})
-    assert "weapon_switch" not in dec.decode(state(weapon=0), 0.05), "all dead ⇒ omitted"
+            wdec.on_result({"ok": False, "reason": "launcher_dead"})
+    assert "weapon_switch" not in wdec.decode(state(weapon=0), 0.05), "all dead ⇒ omitted"
 
 
-def test_weapon_switch_rides_along_with_the_action(dec):
-    dec.rates["weapon"] = 50.0
-    dec.rates["fire"] = 50.0
-    msg = dec.decode(state(weapon=1), 0.05)
+def test_weapon_switch_rides_along_with_the_action(wdec):
+    wdec.rates["weapon"] = 50.0
+    wdec.rates["fire"] = 50.0
+    msg = wdec.decode(state(weapon=1), 0.05)
     assert msg["action"] == "fire" and msg["weapon_switch"] == 2
     assert_bridge_accepts(msg)
 
 
-def test_weapon_switch_handles_start_screen(dec):
+def test_weapon_switch_handles_start_screen(wdec):
     """`weapon` is -1 on the start screen (`indexOf(null)`), so the ring starts at 0."""
-    dec.rates["weapon"] = 50.0
-    assert dec.decode(state(weapon=-1), 0.05)["weapon_switch"] == 0
+    wdec.rates["weapon"] = 50.0
+    assert wdec.decode(state(weapon=-1), 0.05)["weapon_switch"] == 0
 
 
 # --------------------------------------------------------------------------- D10, D11, D12

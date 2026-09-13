@@ -19,11 +19,18 @@ Three readout channels, all named in config:
   approach, so the edge never recurs and the fly goes silent exactly when a missile is
   about to land (#25). At an empty sky the EMA rarely reaches `on_hz` at all and the
   integrator is cleared whenever it drops out of the band, so rest stays quiet.
-* **weapon** — Schmitt on the pooled DNg100+MDN rate, advancing a weapon ring. DNg100 is
-  **not drivable at all** on the real brain (0.00 Hz even with its 47 strongest presynaptic
-  partners at +3.0) and MDN has no game signal wired to it, so with the default config this
-  channel never fires. The mechanism is implemented and unit-tested; inventing a "switch
-  weapon" signal would be fabricating a capability.
+* **weapon** — Schmitt on the pooled DNg100+MDN rate, advancing a weapon ring. **Ships
+  `enabled: false`**, so the rate is measured and published as telemetry and nothing acts
+  on it. No site injects into either type — DNg100 is not drivable at all on the real
+  brain, and MDN has no game signal wired to it — but "nothing drives it" is not the same
+  claim as "it is silent", and the earlier docstring conflated them: baseline network
+  activity alone carried the pooled EMA across a band that sat inside the channel's own
+  resting distribution, and the fly changed launcher for no reason (#27). No threshold
+  fixes that. The channel's EMA under maximum looming barely exceeds its own resting
+  maximum, so every band is either inside the noise or out of reach — what little the
+  channel does track is a leak of the looming signal, not a weapon choice. Disabled by
+  construction beats inert by hope. The mechanism stays implemented and unit-tested for
+  whoever wires a real signal to it; inventing one would be fabricating a capability.
 
 Rates are pooled per channel — `spike_count / dt`, summed over the population, not per
 neuron. That is the quantity the `on_hz`/`off_hz` bands were measured against.
@@ -240,6 +247,9 @@ class Decoder:
         The charge is cleared on release, so a channel that never stays hot never builds
         one, and it is capped at one action per call so no rate can emit twice per tick.
         """
+        if not channel.enabled:
+            return False  # the rate is still measured and published; nothing acts on it
+
         hot = self.rates[key] > channel.off_hz if self._latched[key] \
             else self.rates[key] >= channel.on_hz
         rising = hot and not self._latched[key]
