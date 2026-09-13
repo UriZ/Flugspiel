@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<!--
+  Fixture for tools/spike/viz-panel-probe.mjs. Mounts the REAL src/viz/panel.js against
+  synthetic frames shaped exactly like #4's wire format, so the panel under test is the
+  shipped one and only the data source is fake.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>#6 panel probe</title>
+<link rel="stylesheet" href="/src/ui/shell.css">
+<style>
+  html,body{margin:0;height:100%;background:#111;overflow:hidden}
+  #wrap{display:flex;height:100%;align-items:flex-start}
+  #viz-panel{width:797px;height:872px;background:#101010;position:relative;overflow:hidden}
+  #viz-canvas{display:block;width:100%;height:100%}
+</style>
+</head>
+<body>
+<div id="wrap"><div id="viz-panel"><canvas id="viz-canvas"></canvas></div></div>
+<script type="module">
+import { createPanel } from '/src/viz/panel.js';
+import { parseLayout } from '/src/viz/layout.js';
+
+const N = 166700;
+const BYTES = Math.ceil(N / 8);
+const SIM_HZ = 50;
+const HZ = 19.2;                 // the measured emit rate
+
+const layoutBuf = await (await fetch('/assets/viz-layout.bin')).arrayBuffer();
+const L = parseLayout(layoutBuf.slice(0));
+
+// Real class sizes and real DN slots, so `regions` and `descending.active` carry the
+// same shapes the server sends.
+const classSize = {};
+for (let i = 0; i < L.n; i++) {
+  const k = L.classNames[L.superIdx[i]];
+  classSize[k] = (classSize[k] || 0) + 1;
+}
+const CLASSES = Object.keys(classSize);
+
+const ready = {
+  type: 'ready', protocol: 1, n: N, backend: 'numba', sim_hz: SIM_HZ, step_dt: 0.02,
+  ac2_capable: true, regions: CLASSES,
+  populations: { aim_L: 1, aim_R: 1, fire: 2, weapon: 6, descending: L.dnSlot.length },
+  prosthetic_sites: ['aim_bias_L', 'aim_bias_R'],
+};
+
+const canvas = document.getElementById('viz-canvas');
+const vizPanel = document.getElementById('viz-panel');
+const panel = createPanel(canvas, ready);
+
+let seed = 12345;
+const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+
+const POPC = new Uint8Array(256);
+for (let i = 1; i < 256; i++) POPC[i] = (i & 1) + POPC[i >> 1];
+
+function makeFrame(firing, step, rewardMode) {
+  const bytes = new Uint8Array(BYTES);
+  let lit = 0;
+  const want = Math.round(N * firing);
+  while (lit < want) {
+    const i = (rnd() * N) | 0;
+    if (!((bytes[i >> 3] >> (7 - (i & 7))) & 1)) { bytes[i >> 3] |= 1 << (7 - (i & 7)); lit++; }
+  }
+  let pop = 0;
+  for (let i = 0; i < BYTES; i++) pop += POPC[bytes[i]];
+
+  const regions = {};
+  for (const k of CLASSES) regions[k] = 0;
+  for (let i = 0; i < N; i++) {
+    if ((bytes[i >> 3] >> (7 - (i & 7))) & 1) regions[L.classNames[L.superIdx[i]]]++;
+  }
+  const active = [];
+  for (let k = 0; k < L.dnSlot.length; k++) {
+    const i = L.dnSlot[k];
+    if ((bytes[i >> 3] >> (7 - (i & 7))) & 1) active.push(k);
+  }
+
+  const reward = rewardMode === 'live'
+    ? { enabled: true, value: (rnd() - 0.45) * 2, cumulative: cum += (rnd() - 0.45) * 2,
+        source: rnd() < 0.12 ? 'reward' : rnd() < 0.2 ? 'punish' : 'none',
+        session_changed: rnd() < 0.01, events: { reward: ++evR % 40, punish: evP += rnd() < 0.3 ? 1 : 0 },
+        dopamine: { PAM11: 0.2 + 0.3 * rnd(), PPL101: 0.1 + 0.2 * rnd() },
+        compartments: { reward: 1.004, punish: 0.847 },
+        prosthetic_sites: ready.prosthetic_sites, resyncs: 0, anomalies: 0 }
+    : rewardMode === 'off'
+      ? { enabled: false, value: 0, source: 'none', session_changed: false }
+      : { value: 0.0, source: 'unimplemented', session_changed: false };
+
+  return {
+    step, ackSeq: null, session: 1, action: null,
+    spikes: { n: N, bytes, popcount: pop },
+    regions,
+    descending: { aim_index: (rnd() - 0.5) * 1.2, aim_cmd: 0, crosshair_x: 0.5, aim_zero: 0,
+                  fire_hz: 3 + 3 * rnd(), weapon_hz: 0.4 * rnd(), y_source: 'threat',
+                  halted: false, stats: {}, active },
+    reward,
+    meta: { sim_hz: SIM_HZ, dropped: 0, rejected: 0, unassigned: 0, errors: {} },
+    recvMs: performance.now(),
+  };
+}
+let cum = 0, evR = 0, evP = 0;
+
+let state = { conn: 'connecting', frames: false, firing: 0.085, reward: 'unimplemented' };
+let step = 1_284_610;
+let feed = 0;
+
+// Mirrors shell.js: resize() is called only when the geometry actually changed. The
+// shell raises a dirty flag from a ResizeObserver; the probe compares directly.
+let lastGeo = '';
+const applyGeometry = () => {
+  const r = vizPanel.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(r.width * dpr));
+  const h = Math.max(1, Math.round(r.height * dpr));
+  const key = `${r.width}x${r.height}@${dpr}`;
+  if (key === lastGeo) return;
+  lastGeo = key;
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  panel.resize({ cssW: r.width, cssH: r.height, dpr, w, h });
+};
+
+const pushTimes = [];
+const startFeed = () => {
+  clearInterval(feed);
+  feed = setInterval(() => {
+    if (!state.frames) return;
+    const f = makeFrame(state.firing, step += 3, state.reward);
+    const t = performance.now();
+    panel.push(f);
+    pushTimes.push(performance.now() - t);
+    if (pushTimes.length > 200) pushTimes.shift();
+  }, 1000 / HZ);
+};
+
+let renderTimes = [];
+let frames = 0;
+let t0 = performance.now();
+const tick = () => {
+  applyGeometry();
+  const t = performance.now();
+  panel.render(t);
+  renderTimes.push(performance.now() - t);
+  if (renderTimes.length > 400) renderTimes.shift();
+  frames++;
+  requestAnimationFrame(tick);
+};
+
+panel.setConnection('connecting');
+applyGeometry();
+startFeed();
+requestAnimationFrame(tick);
+
+const med = (a) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+const pct = (a, p) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[Math.floor(p * s.length)]; };
+
+// Dump the distinct colours in a canvas region, so a suspicious tint is diagnosed from
+// the pixels rather than from a downscaled screenshot.
+window.__colours = (x, y, w, h) => {
+  const d = new Uint32Array(canvas.getContext('2d').getImageData(x, y, w, h).data.buffer);
+  const hist = new Map();
+  for (let i = 0; i < d.length; i++) hist.set(d[i], (hist.get(d[i]) || 0) + 1);
+  return [...hist.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)
+    .map(([v, n]) => ({ rgb: '#' + [v & 255, (v >> 8) & 255, (v >> 16) & 255]
+      .map((c) => c.toString(16).padStart(2, '0')).join(''), a: (v >>> 24), n }));
+};
+
+window.__probe = {
+  ready: true,
+  env: () => ({ cssW: vizPanel.clientWidth, cssH: vizPanel.clientHeight,
+                dpr: window.devicePixelRatio || 1, n: N, layoutVersion: L.version,
+                brainPx: canvas.width * canvas.height,
+                brainOccupied: '(see panel)' }),
+  setState(o) {
+    state = { ...state, ...o };
+    if (o.breakLayout) { /* handled below by remount */ }
+    panel.setConnection(state.conn);
+    if (o.after === 'live') { /* frames were flowing; now they stop */ }
+  },
+  setSize(w, h) { vizPanel.style.width = `${w}px`; vizPanel.style.height = `${h}px`; },
+  resetStats() { renderTimes = []; pushTimes.length = 0; frames = 0; t0 = performance.now(); },
+  stats: () => ({
+    fps: +(frames / ((performance.now() - t0) / 1000)).toFixed(1),
+    renderMed: med(renderTimes), renderP95: pct(renderTimes, 0.95), pushMed: med(pushTimes),
+  }),
+};
+</script>
+</body>
+</html>

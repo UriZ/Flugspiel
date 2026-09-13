@@ -116,9 +116,11 @@ export function createRaster() {
       if (cells && filled) {
         const colW = plotW / cols;
         for (let c = 0; c < filled; c++) {
-          // Oldest on the left, newest at the right edge.
+          // Anchored to the RIGHT edge: the newest column is always at `now`, and a
+          // partly-filled ring grows leftwards from it. Anchoring left instead puts
+          // fresh data at -30s and leaves `now` permanently blank.
           const idx = (head - (filled - 1 - c) + cols * 2) % cols;
-          const x = plotX + c * colW;
+          const x = plotX + plotW - (filled - c) * colW;
           const base = idx * ROWS.length;
           for (let r = 0; r < ROWS.length; r++) {
             const v = cells[base + r];

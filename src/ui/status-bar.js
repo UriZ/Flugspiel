@@ -4,7 +4,8 @@
 // no `innerHTML` anywhere in the shell (§8). Every string below that originates on the
 // server — `ready.backend`, `error.code` — arrives through that path.
 
-const WINDOW = 20;          // frames in the popcount ring, ~1.04 s at the measured 19.2 Hz
+import { createSpikeRate } from './spike-rate.js';
+
 const EMPTY = '—';     // em dash
 
 /**
@@ -62,8 +63,9 @@ export function createStatusBar({ root, client, host }) {
   let ready = null;
   let score = null;
   let detached = false;
-  const ring = [];                  // {pop, recvMs} — a plain ring, no EMA
-  let lastStep = -1;
+  // Shared with #6's panel footer: two implementations would put two different spike
+  // rates for the same brain on the same screen.
+  const rate = createSpikeRate();
   const shown = {};
 
   const put = (key, text) => {
@@ -105,30 +107,19 @@ export function createStatusBar({ root, client, host }) {
       if (el.conn.dataset.state !== CONN_CLASS[state]) el.conn.dataset.state = CONN_CLASS[state];
 
       const f = client.latest();
-      if (f && f.step !== lastStep) {
-        lastStep = f.step;
-        ring.push({ pop: f.spikes.popcount, recvMs: f.recvMs, simHz: f.meta.sim_hz });
-        if (ring.length > WINDOW) ring.shift();
-      }
+      rate.observe(f);
       // Frozen rather than blanked when the link drops: the last value is the evidence
       // of where it stopped, and the connection field already carries the state.
       put('step', f ? String(f.step) : EMPTY);
       put('score', Number.isFinite(score) ? String(score) : EMPTY);
 
-      if (ring.length) {
-        const mean = ring.reduce((a, r) => a + r.pop, 0) / ring.length;
-        // NORMATIVE (§4.2): sim_hz, NOT the observed frame rate. The shell sees ~19 of
-        // the brain's ~50 steps/s, so the obvious version under-reports by 2.60x and
-        // looks entirely plausible while doing it.
-        const simHz = ring[ring.length - 1].simHz;
-        put('spikes', fmtRate(mean * simHz));
-        const span = ring.length > 1 ? (ring[ring.length - 1].recvMs - ring[0].recvMs) / 1000 : 0;
-        const observed = span > 0 ? (ring.length - 1) / span : 0;
-        const title = `estimated from ${Math.round(observed)} of ${Math.round(simHz)} steps/s ` +
-                      '— the brain steps faster than the UI samples it';
-        if (el.spikes.title !== title) el.spikes.title = title;
-      } else {
+      const spk = rate.perSecond();
+      if (spk === null) {
         put('spikes', EMPTY);
+      } else {
+        put('spikes', fmtRate(spk));
+        const title = rate.explain();
+        if (el.spikes.title !== title) el.spikes.title = title;
       }
 
       const fly = host.bridge.getMode() === 'fly';
