@@ -67,7 +67,12 @@ export function createDopamine() {
     if (!r) return 'nodata';
     if (r.source === 'unimplemented') return 'unimplemented';
     if (r.source === 'disabled' || r.enabled === false) return 'off';
-    if (!r.source || r.source === 'none') return 'idle';
+    // A block that names no source is an ABSENT block, not a running loop with nothing
+    // to report. #7's telemetry always names its source, `"none"` included, and the
+    // client substitutes `{}` for a missing one — so treating a nameless object as
+    // `idle` renders "the block is missing" as "the loop is alive and quiet".
+    if (typeof r.source !== 'string') return 'nodata';
+    if (r.source === 'none') return 'idle';
     return 'live';
   };
 
@@ -235,13 +240,18 @@ export function createDopamine() {
       const inner = last?.prosthetic_sites;
       const sites = Array.isArray(inner) ? inner : Array.isArray(prostheticSites) ? prostheticSites : null;
       ctx.font = FONT(9);
-      // #7 returns ["unknown"], never []. An empty list would read as "no prosthesis",
-      // which is a false statement rather than a missing one — so it is surfaced as the
-      // fault it is instead of being rendered as clean.
-      const broken = Array.isArray(sites) && sites.length === 0;
+      // #7 returns ["unknown"], never []. An empty INNER list would read as "no
+      // prosthesis", which is a false statement rather than a missing one — so it is
+      // surfaced as the fault it is instead of being rendered as clean.
+      //
+      // The rule is about the inner field only. `ready.prosthetic_sites` is the enabled
+      // sites with a prosthesis, and `[]` there is the honest answer when none is
+      // enabled; calling that a bug is the mirror image of the error above.
+      const broken = Array.isArray(inner) && inner.length === 0;
       ctx.fillStyle = broken ? C.bad : C.prosthetic;
       const text = broken ? 'prosthesis: EMPTY LIST — disclosure missing (bug)'
         : sites === null ? 'prosthesis: not reported'
+        : sites.length === 0 ? 'prosthesis: none enabled'
         : `prosthesis: ${sites.join(' ')}`;
       const words = text.split(' ');
       let line = '';
@@ -312,9 +322,14 @@ export function createDopamine() {
         }
       }
 
+      // Named, not merely ranged. An unlabelled rising line over green ticks is the one
+      // affordance in this zone a viewer is most likely to over-read, and the caption
+      // denies a claim the line never made. It is a running sum of signed magnitudes and
+      // says so; `Σ` is the fallback only when the plot is too narrow for the word.
       ctx.font = FONT(9);
       ctx.fillStyle = C.chromeDim;
-      ctx.fillText(`±${range}`, x + 2, y + 8);
+      const label = `cumulative ±${range}`;
+      ctx.fillText(ctx.measureText(label).width <= w - 4 ? label : `Σ ±${range}`, x + 2, y + 8);
     },
 
     destroy() { head = -1; filled = 0; last = null; counts = { reward: 0, punish: 0 }; },

@@ -243,8 +243,14 @@ def build(npz: Path, mapping_path: Path | None = None) -> tuple[bytes, dict]:
         for s_ in ("L", "R"):
             groups.append((f"aim_{s_}", ROLE_READOUT, 1, side_code_any[s_],
                            cells(aim.get("types", []), s_)))
+        # `fire.enabled` is a real supported configuration -- `Mapping.load` accepts it
+        # and `decoder` refuses to act on the channel when it is false. Hardcoding 1 here
+        # would draw a disabled FIRE at full opacity with a live readout, which is the
+        # exact condition the readout treatment exists to prevent. (`aim` is different:
+        # `Mapping.load` rejects `enabled` on it outright, so 1 is correct there.)
         fire = mapping.get("fire", {})
-        groups.append(("fire", ROLE_READOUT, 1, SIDE_ANY, cells(fire.get("types", []), None)))
+        groups.append(("fire", ROLE_READOUT, int(bool(fire.get("enabled", True))),
+                       SIDE_ANY, cells(fire.get("types", []), None)))
         weapon = mapping.get("weapon", {})
         groups.append(("weapon", ROLE_READOUT, int(bool(weapon.get("enabled", True))),
                        SIDE_ANY, cells(weapon.get("types", []), None)))

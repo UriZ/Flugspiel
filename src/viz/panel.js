@@ -26,7 +26,7 @@ import { createDescending } from './descending.js';
 import { createDopamine } from './dopamine.js';
 import { createRaster, ROWS } from './raster.js';
 import { containFit, loadLayout, PANE_BRAIN, PANE_NONE, PANE_VNC, SEG_OTHER, validate } from './layout.js';
-import { C, FONT } from './palette.js';
+import { C, DECAY, FONT } from './palette.js';
 import { createSpikeRate } from '../ui/spike-rate.js';
 
 const HEADER_H = 22;
@@ -37,6 +37,11 @@ const GUTTER = 10;
 const FPS_WINDOW = 60;
 const ACTIVE_WARN = 0.25;          // above this the footer's `active` turns warn
 const STALL_FACTOR = 2;            // gap columns after this many frame periods
+
+/** Upper bound on the decay steps needed to take a pixel from full back to the floor.
+ *  Derived from `DECAY` rather than written down, so retuning the decay cannot silently
+ *  make the stall catch-up clamp too tight. */
+const DECAY_STEPS = Math.ceil(Math.log(255) / -Math.log(DECAY)) + 1;
 
 const fmt = (v) => (Number.isFinite(v) ? Math.round(v).toLocaleString() : '—');
 
@@ -287,19 +292,45 @@ export function createPanel(canvas, ready) {
     }
   }
 
-  function scaleBar(rect, um) {
-    if (!rect || !um || rect.w < 70 || rect.h < 28) return;
+  /** Drawn down to the inset's width, not only at full pane width. The two panes are at
+   *  genuinely different scales, so a pane without a bar is an undeclared second scale
+   *  inside the first — a viewer reads the inset as part of the surrounding projection.
+   *
+   *  Gated on whether the number actually fits rather than on a round minimum width: a
+   *  half-drawn measurement is worse than none, and a fixed floor either skips rects a
+   *  bar fits in or draws into ones it does not.
+   *
+   *  @param {'left'|'right'} align which end of the pane the bar sits at. The brain's
+   *  moves left when the VNC is inset, or the two bars land on top of each other in the
+   *  same corner and the reading everything else here depends on becomes unreadable.
+   */
+  function scaleBar(rect, um, align = 'right') {
+    if (!rect || !um || rect.h < 24) return;
     // A round number of micrometres whose bar is a comfortable fraction of the pane.
     const targets = [10, 20, 50, 100, 200, 500, 1000];
     const pxPerUm = rect.w / um;
     let pick = targets[0];
     for (const t of targets) if (t * pxPerUm <= rect.w * 0.35) pick = t;
     const barW = pick * pxPerUm;
-    const x = rect.x + rect.w - barW - 6;
+    const label = `${pick}µm`;
+    // The number, not the bar, is what runs out of room first — the bar is a fraction
+    // of the pane by construction. One step smaller before giving up, because at the
+    // inset's width the choice is an 8px number or no declaration at all.
+    let px = 9;
+    ctx.font = FONT(px);
+    let labelW = ctx.measureText(label).width;
+    if (Math.max(barW, labelW) + 4 > rect.w) {
+      px = 8;
+      ctx.font = FONT(px);
+      labelW = ctx.measureText(label).width;
+    }
+    if (Math.max(barW, labelW) + 4 > rect.w) return;
+    const x = align === 'left' ? rect.x + 6 : rect.x + rect.w - barW - 6;
     const y = rect.y + rect.h - 10;
     ctx.fillStyle = '#3a3a3a';
     ctx.fillRect(x, y, barW, 1);
-    text(`${pick}µm`, x + barW, y - 4, C.chromeDim, 9, 'right');
+    if (align === 'left') text(label, x, y - 4, C.chromeDim, px);
+    else text(label, x + barW, y - 4, C.chromeDim, px, 'right');
   }
 
   function renderHeader(rect) {
@@ -464,12 +495,28 @@ export function createPanel(canvas, ready) {
 
       // A link that stopped delivering keeps the time axis true: gap columns, and the
       // map's decay keeps running so activity visibly fades to floor. Nothing freezes.
-      while (t0 >= nextGapMs) {
-        raster.pushGap();
-        panes[PANE_BRAIN].decayOnly();
-        panes[PANE_VNC].decayOnly();
-        panes[PANE_NONE].decayOnly();
-        nextGapMs += Math.max(16, framePeriodMs);
+      //
+      // Clamped to what is observable, and the two have DIFFERENT bounds. Unclamped
+      // this is linear in the length of the outage, so a sleep/wake or a stopped bridge
+      // blocks the main thread for seconds — and the game shares that thread.
+      //
+      //   raster  — one ring's worth. Past that every `pushGap()` overwrites a gap with
+      //             a gap. Cheap per step, so the bound is the full ring.
+      //   panes   — `DECAY_STEPS`. The decay has reached the floor by then, so every
+      //             further pass is a no-op over every occupied pixel of all three
+      //             panes. Sharing the raster's bound here still cost most of a second.
+      if (t0 >= nextGapMs) {
+        const period = Math.max(16, framePeriodMs);
+        const due = Math.floor((t0 - nextGapMs) / period) + 1;
+        for (let i = Math.min(due, raster.columns); i > 0; i--) raster.pushGap();
+        for (let i = Math.min(due, DECAY_STEPS); i > 0; i--) {
+          panes[PANE_BRAIN].decayOnly();
+          panes[PANE_VNC].decayOnly();
+          panes[PANE_NONE].decayOnly();
+        }
+        // Advanced by the full count, never by the work done: leaving the clock behind
+        // would re-run the clamped loop on every frame from here on.
+        nextGapMs += due * period;
       }
 
       const { cssW: w, cssH: h } = geo;
@@ -482,7 +529,9 @@ export function createPanel(canvas, ready) {
         zoneTitle(zones.brain, 'BRAIN', `optic lobes + central brain · ${fmt(members[PANE_BRAIN].length)} positioned`);
         panes[PANE_BRAIN].blit(ctx, Math.round(zones.brainFit.x * geo.dpr),
                                Math.round(zones.brainFit.y * geo.dpr));
-        scaleBar(zones.brainFit, layout.paneUm[PANE_BRAIN]);
+        // Left when the VNC is inset in this pane's bottom-right corner, which is where
+        // this bar would otherwise be drawn — and the inset is blitted over it.
+        scaleBar(zones.brainFit, layout.paneUm[PANE_BRAIN], zones.vncInset ? 'left' : 'right');
         if (zones.vncFit) {
           if (!zones.vncInset) zoneTitle(zones.vnc, 'VNC', `${fmt(members[PANE_VNC].length)}`);
           panes[PANE_VNC].blit(ctx, Math.round(zones.vncFit.x * geo.dpr),
@@ -492,6 +541,10 @@ export function createPanel(canvas, ready) {
             ctx.lineWidth = 1;
             ctx.strokeRect(zones.vncFit.x - 0.5, zones.vncFit.y - 0.5,
                            zones.vncFit.w + 1, zones.vncFit.h + 1);
+            // The inset keeps a name at every size. A bordered box in the corner of the
+            // map, at a different zoom from the map around it and saying neither what it
+            // is nor what scale it is at, is the one thing this pane must not be.
+            text('VNC', zones.vncFit.x + 3, zones.vncFit.y + 10, C.chrome, 9);
           }
           scaleBar(zones.vncFit, layout.paneUm[PANE_VNC]);
         }

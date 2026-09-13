@@ -36,11 +36,15 @@ export const ROWS = [
 ];
 
 const K_REFERENCE = 0.4;      // same saturation reference as the map (§5.2)
-const GAP = 250;              // the value written into a gap column
 
 export function createRaster() {
   let cols = 0;
-  let cells = null;           // Uint8Array[cols * ROWS.length], 0..255 or GAP
+  let cells = null;           // Uint8Array[cols * ROWS.length], 0..255, all real values
+  // Gap-ness is carried OUT OF BAND, one flag per column. A sentinel inside `cells`
+  // would share the value space with real data, so a class firing hard enough to hit it
+  // would render as "the frame never arrived" — the exact inversion of this zone's rule.
+  // One flag per column, not per cell, because `pushGap()` fills all 13 rows together.
+  let gap = null;             // Uint8Array[cols], 1 = no data for this column
   let head = -1;              // newest column index, -1 = empty
   let filled = 0;
   let sizes = null;           // denominator per row
@@ -64,6 +68,7 @@ export function createRaster() {
       if (next === cols) return;
       cols = next;
       cells = new Uint8Array(cols * ROWS.length);
+      gap = new Uint8Array(cols);
       head = -1;
       filled = 0;
     },
@@ -74,6 +79,7 @@ export function createRaster() {
       if (!cells || !sizes) return;
       head = (head + 1) % cols;
       filled = Math.min(cols, filled + 1);
+      gap[head] = 0;
       const base = head * ROWS.length;
       for (let r = 0; r < ROWS.length; r++) {
         const n = sizes[r];
@@ -93,7 +99,8 @@ export function createRaster() {
       if (!cells) return;
       head = (head + 1) % cols;
       filled = Math.min(cols, filled + 1);
-      cells.fill(GAP, head * ROWS.length, (head + 1) * ROWS.length);
+      gap[head] = 1;
+      cells.fill(0, head * ROWS.length, (head + 1) * ROWS.length);
     },
 
     /**
@@ -122,9 +129,10 @@ export function createRaster() {
           const idx = (head - (filled - 1 - c) + cols * 2) % cols;
           const x = plotX + plotW - (filled - c) * colW;
           const base = idx * ROWS.length;
+          const isGap = gap[idx];
           for (let r = 0; r < ROWS.length; r++) {
             const v = cells[base + r];
-            if (v === GAP) ctx.fillStyle = '#2a1a1a';
+            if (isGap) ctx.fillStyle = '#2a1a1a';
             else if (!v) continue;
             else {
               const u = RAMP_LUT[Math.min(63, v >> 2)];
@@ -181,6 +189,6 @@ export function createRaster() {
       }
     },
 
-    destroy() { cells = null; sizes = null; otherKeys = null; },
+    destroy() { cells = null; gap = null; sizes = null; otherKeys = null; },
   };
 }
