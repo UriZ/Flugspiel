@@ -26,6 +26,7 @@
 //     ADOPTED t_survive = 5.0 s — the rounded median gap, so the reward event fires on
 //     roughly half of surviving intervals and is maximally informative.
 
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { makeCanvas } from '../../tests/helpers/dom-stub.js';
 import { Game } from '../../src/game/vendor/game.js';
 import { FlyBridge } from '../../src/game/fly-bridge.js';
@@ -40,16 +41,16 @@ function session() {
   bridge.setMode('fly');
   bridge.startGame();
   const losses = [];
-  let prev = null, t = 0;
+  let prev = null, start = null, t = 0;
   for (let i = 0; i < MAX_SECS * 60; i++) {
     game.update(DT);
     t += DT;
     const s = bridge.getState();
-    if (prev === null) prev = s.base.launchers_alive;
+    if (prev === null) { prev = s.base.launchers_alive; start = prev; }
     if (s.base.launchers_alive < prev) { losses.push(t); prev = s.base.launchers_alive; }
-    if (s.phase !== 'playing') return { losses, dur: t, end: s.phase, score: s.score };
+    if (s.phase !== 'playing') return { losses, dur: t, start, end: s.phase, score: s.score };
   }
-  return { losses, dur: t, end: 'timeout(STALLED)', score: 0 };
+  return { losses, dur: t, start, end: 'timeout(STALLED)', score: 0 };
 }
 
 const runs = [];
@@ -76,4 +77,14 @@ for (const T of [2, 3, 4, 5, 6, 8]) {
   });
   const sorted = [...rp].sort((a, b) => a - b);
   console.log(`  T=${T}  ${rp.map((x) => x.toFixed(2)).join(' ')}  median=${sorted[rp.length >> 1].toFixed(2)}`);
+}
+
+if (process.argv.includes('--json')) {
+  // The replay stimulus for #7 §9's three arms. `reward.py`'s detector reads only `t`,
+  // `phase`, `session` and `launchers_alive`, all of which reconstruct from these loss
+  // times — recording the full state stream would commit megabytes for nothing.
+  const out = new URL('./traces/openloop.json', import.meta.url);
+  mkdirSync(new URL('./traces/', import.meta.url), { recursive: true });
+  writeFileSync(out, JSON.stringify({ dt: DT, sessions: runs }, null, 1) + '\n');
+  console.log(`\nwrote ${runs.length} sessions to ${out.pathname}`);
 }

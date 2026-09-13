@@ -13,7 +13,8 @@ Expected output (MaleCNS v1.0, data/brain.npz + data/weights.npz):
     PPL101 compartment MBON25,MBON34 0.1291  MBON11 0.0982  MBON20 0.0156  MBON30 0.0109
     MBON -> DN: 170/1314 DNs receive any MBON input; best DNp52 0.0705
       DNa02 0.0065/0.0039   DNp01 0.0000   DNg100 0.0000   MDN ~0.004
-    ALIAS csc->csc same dtype shares data: True      <- FlyBrain.__init__ hazard
+    ALIAS csc->csc same dtype shares data: True      <- the scipy behaviour
+    OWNERSHIP FlyBrain.W shares the caller's buffer: False   <- must be False
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ from pathlib import Path
 import numpy as np
 from scipy import sparse
 
-from src.brain.connectome import load
+from src.brain.connectome import BrainMeta, load
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -71,6 +72,23 @@ def main() -> None:
     A = sparse.csc_matrix((d, ([0, 1, 2], [0, 1, 2])), shape=(3, 3), dtype=np.float32)
     print("ALIAS csc->csc same dtype shares data:",
           np.shares_memory(A.data, sparse.csc_matrix(A, dtype=np.float32).data))
+
+    # #7 §6, made machine-checkable rather than left as a comment: the loop writes
+    # `brain.W.data` in place, so a FlyBrain that shares its caller's buffer would
+    # silently rewrite the caller's matrix, any second brain built from it, and any
+    # baseline a comparison run was holding. MUST print False.
+    from src.brain.lif import FlyBrain
+
+    meta = BrainMeta(ids=np.arange(3, dtype=np.int64),
+                     cell_type=np.asarray(["A", "B", "C"], dtype=str),
+                     side=np.asarray(["L"] * 3, dtype="<U1"),
+                     superclass=np.asarray(["central_brain"] * 3, dtype=str),
+                     nt=np.asarray(["acetylcholine"] * 3, dtype=str),
+                     nt_sign=np.ones(3, dtype=np.float32),
+                     position=np.zeros((3, 3), dtype=np.float32),
+                     ol_hex=np.full((3, 2), np.nan, dtype=np.float32))
+    print("OWNERSHIP FlyBrain.W shares the caller's buffer:",
+          np.shares_memory(A.data, FlyBrain(A, meta).W.data), "  <- must be False")
 
 
 if __name__ == "__main__":
