@@ -60,7 +60,7 @@ class EncodedFrame:
     launcher_x: list[float]
     unassigned: int                              # photoreceptors with no azimuth column
     prosthetic_sites: list[str]
-    rejected: int                                # non-finite numbers found in the state
+    rejected: int                                # wire values the encoder could not use
 
 
 @dataclass(frozen=True)
@@ -166,6 +166,25 @@ def _finite(value: Any) -> tuple[float, bool]:
     return (v, True) if math.isfinite(v) else (0.0, False)
 
 
+def _list(value: Any) -> tuple[Sequence, int]:
+    """A wire array, plus 1 if the key was present but held something else (#26).
+
+    A scalar where a list belongs is a client bug, not an attack, but iterating it raises
+    and `encode()` promises it never does. Absent/null is not counted: it is the normal
+    way to say "none", and #4 relies on `rejected` meaning "the client sent nonsense".
+    """
+    if isinstance(value, (list, tuple)):
+        return value, 0
+    return (), int(value is not None)
+
+
+def _obj(value: Any) -> tuple[dict, int]:
+    """A wire object, plus 1 if the key was present but held something else (#26)."""
+    if isinstance(value, dict):
+        return value, 0
+    return {}, int(value is not None)
+
+
 class Encoder:
     """GameState → `EncodedFrame`. Holds no clock and no step counter (#4 schedules it)."""
 
@@ -223,8 +242,8 @@ class Encoder:
             np.clip(amounts, 0.0, m.max_inject, out=amounts)
             inject.append((sub, amounts))
 
-        launchers = state.get("launchers") or []
-        hp, lx, rejected = [], [], ctx.rejected
+        launchers, bad = _list(ctx.state.get("launchers"))
+        hp, lx, rejected = [], [], ctx.rejected + bad
         for l in launchers:
             if not isinstance(l, dict):
                 rejected += 1
@@ -251,9 +270,11 @@ class Encoder:
 
     def _context(self, state: dict, crosshair_x: float) -> SignalCtx:
         m = self.mapping
-        rejected = 0
+        state, rejected = _obj(state)
+        missiles, bad = _list(state.get("missiles"))
+        rejected += bad
         xs, ys, vys = [], [], []
-        for e in state.get("missiles") or []:
+        for e in missiles:
             if not isinstance(e, dict):
                 rejected += 1
                 continue
@@ -267,7 +288,9 @@ class Encoder:
         ey = np.asarray(ys, dtype=np.float64)
         evy = np.asarray(vys, dtype=np.float64)
 
-        health, ok = _finite((state.get("base") or {}).get("health"))
+        base, bad = _obj(state.get("base"))
+        rejected += bad
+        health, ok = _finite(base.get("health"))
         rejected += not ok
         cx, ok = _finite(crosshair_x)
         rejected += not ok

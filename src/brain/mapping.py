@@ -26,6 +26,19 @@ SIDES = (None, "L", "R", "M")
 GAIN_MODS = (None, "drive")
 Y_POLICIES = ("threat", "fixed")
 
+# Every key each object may carry. Anything else is rejected at load: a mapping is read
+# with `.get(key, default)` throughout, so a misspelled key does not fail — it silently
+# selects the default. `"prostesis": true` would ship `aim_bias` injecting at full gain
+# while `EncodedFrame.prosthetic_sites` denied it existed, and #7's honesty clause rests
+# on that flag. A disclosure that fails open is worse than none.
+TOP_KEYS = ("version", "game", "columns", "max_inject", "hex_flip", "sites", "drive_mod_k",
+            "loom", "retina", "aim", "fire", "weapon")
+SITE_KEYS = ("name", "types", "side", "signal", "gain", "gain_mod", "prosthesis", "enabled")
+CHANNEL_KEYS = ("types", "tau", "on_hz", "off_hz", "spikes_per_action")
+LOOM_KEYS = ("y_ground", "tau", "ttc_min", "side_flip")
+RETINA_KEYS = ("spread_cols",)
+AIM_KEYS = ("types", "tau", "dead", "k_turn", "zero", "invert", "y_policy", "y_default")
+
 
 class MappingError(ValueError):
     """A mapping config that cannot be trusted to run."""
@@ -53,6 +66,7 @@ class Channel:
     tau: float
     on_hz: float
     off_hz: float
+    spikes_per_action: float | None  # pooled spikes above off_hz per repeat; None = edge only
 
 
 @dataclass(frozen=True)
@@ -91,6 +105,7 @@ class Mapping:
 
     @classmethod
     def _build(cls, raw: dict) -> "Mapping":
+        _only(raw, TOP_KEYS, "mapping")
         if raw.get("version") != 1:
             raise MappingError(f"unsupported mapping version {raw.get('version')!r}, expected 1")
         game = raw.get("game")
@@ -118,15 +133,18 @@ class Mapping:
             raise MappingError("mapping has no sites")
 
         loom = dict(raw.get("loom", {}))
+        _only(loom, LOOM_KEYS, "loom")
         _num(loom, "y_ground", "loom")
         _num(loom, "tau", "loom", low=1e-9)
         _num(loom, "ttc_min", "loom", low=1e-9)
         loom.setdefault("side_flip", False)
 
         retina = dict(raw.get("retina", {}))
+        _only(retina, RETINA_KEYS, "retina")
         _num(retina, "spread_cols", "retina", low=1e-9)
 
         aim = dict(raw.get("aim", {}))
+        _only(aim, AIM_KEYS, "aim")
         aim["types"] = _types(aim.get("types"), "aim")
         _num(aim, "tau", "aim", low=1e-9)
         _num(aim, "k_turn", "aim", low=0.0)
@@ -159,6 +177,13 @@ def _known_signals() -> Sequence[str]:
     return tuple(SIGNALS)
 
 
+def _only(d: dict, known: Sequence[str], where: str) -> None:
+    """Reject unknown keys. See the comment on `TOP_KEYS`: typos must not fail open."""
+    extra = sorted(k for k in d if k not in known)
+    if extra:
+        raise MappingError(f"{where}: unknown key(s) {extra}; known keys are {sorted(known)}")
+
+
 def _num(d: dict, key: str, where: str, *, low: float | None = None) -> float:
     v = d.get(key)
     if not isinstance(v, (int, float)) or isinstance(v, bool) or not np.isfinite(v):
@@ -182,6 +207,7 @@ def _site(entry: Any, signals: Sequence[str]) -> Site:
     name = entry.get("name")
     if not isinstance(name, str) or not name:
         raise MappingError(f"site name must be a non-empty string, got {name!r}")
+    _only(entry, SITE_KEYS, f"site {name!r}")
     if entry.get("signal") not in signals:
         raise MappingError(f"site {name!r}: unknown signal {entry.get('signal')!r}; "
                            f"known signals are {sorted(signals)}")
@@ -201,13 +227,17 @@ def _site(entry: Any, signals: Sequence[str]) -> Site:
 def _channel(entry: Any, where: str) -> Channel:
     if not isinstance(entry, dict):
         raise MappingError(f"{where} must be an object, got {entry!r}")
+    _only(entry, CHANNEL_KEYS, where)
     on_hz = _num(entry, "on_hz", where, low=0.0)
     off_hz = _num(entry, "off_hz", where, low=0.0)
     if on_hz <= off_hz:
         raise MappingError(f"{where}: on_hz ({on_hz}) must exceed off_hz ({off_hz}) — "
                            f"a Schmitt trigger with no hysteresis chatters")
+    per = entry.get("spikes_per_action")
     return Channel(types=_types(entry.get("types"), where), tau=_num(entry, "tau", where, low=1e-9),
-                   on_hz=on_hz, off_hz=off_hz)
+                   on_hz=on_hz, off_hz=off_hz,
+                   spikes_per_action=None if per is None
+                   else _num(entry, "spikes_per_action", where, low=1e-9))
 
 
 # ------------------------------------------------------- geometry shared by both modules

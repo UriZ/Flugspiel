@@ -10,7 +10,15 @@ Three readout channels, all named in config:
   sets yaw velocity, not heading. The same measurement shows a large constant bias
   (index = +0.365 at a symmetric command, seed-to-seed sd 0.09), so the zero must come from
   `calibrate()` on the live brain, never from a constant.
-* **fire** — Schmitt trigger on the pooled DNp01 rate, emitting only on the rising edge.
+* **fire** — Schmitt trigger on the pooled DNp01 rate. The rising edge fires, and while
+  the rate stays inside the band the channel keeps firing at a rate proportional to the
+  drive: it integrates the pooled rate in excess of `off_hz` and emits one action per
+  `spikes_per_action` pooled spikes. Edge-only was the original rule (#3 §3.5) and is
+  still reachable with `spikes_per_action: null`, but it is wrong for a command neuron
+  under sustained input — real looming holds DNp01 far above `off_hz` for the whole
+  approach, so the edge never recurs and the fly goes silent exactly when a missile is
+  about to land (#25). At an empty sky the EMA rarely reaches `on_hz` at all and the
+  integrator is cleared whenever it drops out of the band, so rest stays quiet.
 * **weapon** — Schmitt on the pooled DNg100+MDN rate, advancing a weapon ring. DNg100 is
   **not drivable at all** on the real brain (0.00 Hz even with its 47 strongest presynaptic
   partners at +3.0) and MDN has no game signal wired to it, so with the default config this
@@ -72,14 +80,26 @@ class Decoder:
         self._mask = np.zeros(brain.n, dtype=bool)  # reused; zeroing 166k per step is waste
         zero = m.aim["zero"]
         self.aim_zero = None if zero is None else float(zero)  # else calibrate() measures it
-        self.reset()
+        self.reset(readout=True)
 
-    def reset(self) -> None:
-        """Crosshair to centre, all EMAs and latches cleared. Does not clear `aim_zero`."""
-        self.rates = {k: 0.0 for k in self._pop}
+    def reset(self, *, readout: bool = False) -> None:
+        """Crosshair to centre, session counters cleared. Does not clear `aim_zero`.
+
+        The EMAs and latches are **brain-derived**, and #4 resets the decoder at a session
+        boundary and on reconnect while deliberately not resetting the brain (#4 §4.3).
+        Zeroing them there discards a measurement of a system that did not change, and the
+        EMA then re-converges from 0 through `on_hz` — a rising edge the brain never
+        produced, and one spurious `fire` every reconnect (#22). So they survive a reset by
+        default: a channel that is genuinely hot at reset time stays hot and keeps its
+        train, and a cold one still needs a real crossing. Pass `readout=True` only when
+        the caller also reset the brain.
+        """
+        if readout:
+            self.rates = {k: 0.0 for k in self._pop}
+            self._latched = {"fire": False, "weapon": False}
+            self._charge = {"fire": 0.0, "weapon": 0.0}
         self.crosshair_x = 0.5
         self.halted = False
-        self._latched = {"fire": False, "weapon": False}
         self._dead_weapons: set[int] = set()
         self._pending: dict | None = None
         self._cmd = 0.0
@@ -104,6 +124,8 @@ class Decoder:
         """One message `FlyBridge.applyAction()` accepts. At most one action per call."""
         if self.halted:
             return {"action": "noop"}
+        if not isinstance(state, dict):
+            state = {}  # #26: a malformed frame must not end the session
 
         # A latch nobody confirmed is treated as committed: #4 is not obliged to be
         # synchronous, and re-offering forever would spam the game.
@@ -114,8 +136,8 @@ class Decoder:
         self.crosshair_x = float(np.clip(
             self.crosshair_x + self.mapping.aim["k_turn"] * dt_decode * self._cmd, 0.0, 1.0))
 
-        fire = self._schmitt("fire", self.mapping.fire)
-        weapon = self._schmitt("weapon", self.mapping.weapon)
+        fire = self._trigger("fire", self.mapping.fire, dt_decode)
+        weapon = self._trigger("weapon", self.mapping.weapon, dt_decode)
 
         action: dict[str, Any]
         if fire:
@@ -175,7 +197,7 @@ class Decoder:
         frame = encoder.neutral()
         dt = self.brain.params.dt
         self.brain.reset()
-        self.reset()
+        self.reset(readout=True)
         total = 0.0
         for i in range(settle + steps):
             self.observe(self.brain.step(inject=frame.inject), dt)
@@ -210,13 +232,33 @@ class Decoder:
         cmd = 0.0 if abs(cmd) <= dead else math.copysign((abs(cmd) - dead) / (1.0 - dead), cmd)
         return -cmd if aim["invert"] else cmd
 
-    def _schmitt(self, key: str, channel) -> bool:
-        """True only on the rising edge: latch at `on_hz`, release below `off_hz`."""
+    def _trigger(self, key: str, channel, dt: float) -> bool:
+        """Latch at `on_hz`, release below `off_hz`; fire on the edge and then on charge.
+
+        `spikes_per_action` is the pooled spike count, above the `off_hz` floor, that buys
+        one more action while the channel stays hot. `None` restores the edge-only rule.
+        The charge is cleared on release, so a channel that never stays hot never builds
+        one, and it is capped at one action per call so no rate can emit twice per tick.
+        """
         hot = self.rates[key] > channel.off_hz if self._latched[key] \
             else self.rates[key] >= channel.on_hz
         rising = hot and not self._latched[key]
         self._latched[key] = hot
-        return rising
+
+        per = channel.spikes_per_action
+        if per is None:
+            return rising
+        if not hot:
+            self._charge[key] = 0.0
+        elif rising:
+            self._charge[key] = per  # the edge itself buys the first action
+        else:
+            self._charge[key] = min(per, self._charge[key]
+                                    + (self.rates[key] - channel.off_hz) * dt)
+        if self._charge[key] < per:
+            return False
+        self._charge[key] = 0.0
+        return True
 
     def _advance_weapon(self, state: dict) -> int | None:
         current = state.get("weapon")
@@ -235,7 +277,8 @@ class Decoder:
         self._y_source = "default"
         if aim["y_policy"] == "threat":
             ys, strength = [], []
-            for e in state.get("missiles") or []:
+            missiles = state.get("missiles")
+            for e in missiles if isinstance(missiles, (list, tuple)) else ():
                 if not isinstance(e, dict):
                     continue
                 ex, ok = _num(e.get("x"))
