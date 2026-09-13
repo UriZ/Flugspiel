@@ -79,6 +79,19 @@ const shot = async (name) => {
   return p;
 };
 
+// Crop of the dopamine zone, used to PROVE two reward states render differently rather
+// than trusting that they do. A probe arm that silently renders the same pixels as the
+// previous arm passes, produces a screenshot, and looks exactly like evidence.
+const dopCrop = async () => {
+  const box = await page.evaluate(() => {
+    const r = document.getElementById('viz-panel').getBoundingClientRect();
+    return { x: r.x, y: r.y + r.height - 160, width: r.width, height: 120 };
+  });
+  return (await page.screenshot({ clip: box })).toString('base64');
+};
+const dopShots = new Map();
+let rewardFails = 0;
+
 // ---- states -------------------------------------------------------------------
 const STATES = [
   ['connecting-no-frames', { conn: 'connecting', frames: false }],
@@ -89,6 +102,10 @@ const STATES = [
   ['reward-unimplemented', { conn: 'live', frames: true, firing: 0.085, reward: 'unimplemented' }],
   ['reward-live-events', { conn: 'live', frames: true, firing: 0.085, reward: 'live' }],
   ['reward-loop-off', { conn: 'live', frames: true, firing: 0.085, reward: 'off' }],
+  // `unimplemented` (nobody built it) and `disabled` (AC5's control condition, running)
+  // must not render alike. The probe screenshots both so the difference is checkable.
+  ['reward-control-disabled', { conn: 'live', frames: true, firing: 0.085, reward: 'control' }],
+  ['reward-empty-disclosure', { conn: 'live', frames: true, firing: 0.085, reward: 'emptysites' }],
   ['layout-mismatch', { conn: 'live', frames: true, firing: 0.085, reward: 'live', breakLayout: true }],
   ['layout-restored', { conn: 'live', frames: true, firing: 0.085, breakLayout: false }],
 ];
@@ -97,7 +114,26 @@ console.log('\n=== states ===');
 for (const [name, opts] of STATES) {
   await page.evaluate((o) => window.__probe.setState(o), opts);
   await sleep(opts.after ? 2200 : 1400);
+  if (name.startsWith('reward-')) dopShots.set(name, await dopCrop());
   console.log(`  ${name.padEnd(24)} ${await shot(name)}`);
+}
+
+console.log('\n=== reward state rendering ===');
+{
+  // Not "all states differ": `enabled: false` and `source: "disabled"` are two
+  // encodings of the SAME state (the loop exists and is switched off) and must render
+  // alike — that agreement is itself the invariant worth checking. What must differ is
+  // "nobody built it" from "the control is running", and a live zone from a faulty one.
+  const eq = (a, b) => dopShots.get(a) === dopShots.get(b);
+  const assert = (ok, msg) => { rewardFails += ok ? 0 : 1; console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${msg}`); };
+  assert(eq('reward-loop-off', 'reward-control-disabled'),
+         'enabled:false and source:"disabled" agree — both are the control condition');
+  assert(!eq('reward-unimplemented', 'reward-control-disabled'),
+         '"unimplemented" (never built) differs from "disabled" (control, running)');
+  assert(!eq('reward-live-events', 'reward-control-disabled'),
+         'a live zone differs from the control condition');
+  assert(!eq('reward-empty-disclosure', 'reward-live-events'),
+         'an empty prosthetic_sites list is surfaced, not rendered as clean');
 }
 
 // ---- sizes: the degradation ladder ---------------------------------------------
@@ -128,7 +164,8 @@ for (const firing of [0.085, 0.25, 0.5]) {
     `${s.pushMed.toFixed(2).padStart(8)}   ${before}`);
 }
 
-console.log(`\nloadavg now ${load()}   (8 physical / 16 logical cores)`);
+console.log(`\nreward-state assertions: ${rewardFails ? `${rewardFails} FAILED` : 'all passed'}`);
+console.log(`loadavg now ${load()}   (8 physical / 16 logical cores)`);
 console.log(`screenshots: ${OUT}`);
 if (errors.length) { console.log('\npage errors:'); for (const e of [...new Set(errors)]) console.log('  ' + e); }
 else console.log('no page errors');

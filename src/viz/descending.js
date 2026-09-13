@@ -20,7 +20,15 @@ import { C, FONT } from './palette.js';
 const PULSE_MS = 300;
 const DECAY_MS = 300;
 
-/** Group label -> the artifact group names it is composed of, in display order. */
+/** Group label -> the artifact group names it is composed of, in display order.
+ *
+ *  `value` is only consulted for an ENABLED channel. A channel the mapping switches off
+ *  has no readout: `weapon_hz` keeps moving because the rate estimator keeps running,
+ *  but #27 established there is no usable threshold behind it — its EMA maximum is the
+ *  same in every condition including an empty sky, which is two-coincident-spike
+ *  arithmetic rather than a response to anything. Rendering that as "N.N Hz" under a
+ *  WEAPON label invites a viewer to read a live rate and conclude the fly is switching
+ *  launchers. Dimming the number is not enough; the number must not be a rate. */
 const CHANNELS = [
   { label: 'AIM', groups: ['aim_L', 'aim_R'], value: (t) => (Number.isFinite(t.aim_index) ? `idx ${t.aim_index >= 0 ? '+' : ''}${t.aim_index.toFixed(2)}` : null) },
   { label: 'FIRE', groups: ['fire'], value: (t) => (Number.isFinite(t.fire_hz) ? `${t.fire_hz.toFixed(1)} Hz` : null) },
@@ -209,7 +217,8 @@ export function createDescending(layout) {
           ctx.fillRect(x + half * (sq + 3) + 1, rect.y + 27, 1, sq);
         }
 
-        const val = ch.value(t);
+        // Suppressed, not merely dimmed, for a channel that cannot fire.
+        const val = ch.enabled ? ch.value(t) : 'no readout';
         ctx.fillStyle = C.key;
         ctx.fillText(clip(val ?? '—', 9), x, rect.y + 46);
 

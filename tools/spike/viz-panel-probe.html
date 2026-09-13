@@ -78,13 +78,22 @@ function makeFrame(firing, step, rewardMode) {
     if ((bytes[i >> 3] >> (7 - (i & 7))) & 1) active.push(k);
   }
 
-  const reward = rewardMode === 'live'
+  const reward = rewardMode === 'control'
+    ? { enabled: false, value: 0, cumulative: 0, source: 'disabled', session_changed: false,
+        events: { reward: 0, punish: 0 }, prosthetic_sites: ['aim_bias_L', 'aim_bias_R'],
+        resyncs: 0, anomalies: 0 }
+    : rewardMode === 'emptysites'
+    ? { enabled: true, value: 0.4, cumulative: 2.1, source: 'reward', session_changed: false,
+        events: { reward: 3, punish: 1 }, dopamine: { PAM11: 0.4, PPL101: 0.1 },
+        compartments: { reward: 1.01, punish: 0.9 }, prosthetic_sites: [],
+        resyncs: 0, anomalies: 2 }
+    : rewardMode === 'live'
     ? { enabled: true, value: (rnd() - 0.45) * 2, cumulative: cum += (rnd() - 0.45) * 2,
         source: rnd() < 0.12 ? 'reward' : rnd() < 0.2 ? 'punish' : 'none',
         session_changed: rnd() < 0.01, events: { reward: ++evR % 40, punish: evP += rnd() < 0.3 ? 1 : 0 },
         dopamine: { PAM11: 0.2 + 0.3 * rnd(), PPL101: 0.1 + 0.2 * rnd() },
         compartments: { reward: 1.004, punish: 0.847 },
-        prosthetic_sites: ready.prosthetic_sites, resyncs: 0, anomalies: 0 }
+        prosthetic_sites: ['aim_bias_L', 'aim_bias_R'], resyncs: 0, anomalies: 0 }
     : rewardMode === 'off'
       ? { enabled: false, value: 0, source: 'none', session_changed: false }
       : { value: 0.0, source: 'unimplemented', session_changed: false };

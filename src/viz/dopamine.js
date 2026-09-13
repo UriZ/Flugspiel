@@ -20,8 +20,9 @@ const FORBIDDEN = /\b(learn|learning|learned|train|training|trained|improv\w*|pr
 
 const CAPTION = {
   live: 'Injected dopamine and synaptic efficacy. Not evidence of learning.',
-  off: 'Reward loop disabled — no dopamine injected, no weight change.',
+  off: 'Reward loop disabled — no dopamine injected, no weight change. Control condition.',
   unimplemented: '#7 not implemented — this zone has no data source yet.',
+  nodata: 'Injected dopamine and synaptic efficacy. Not evidence of learning.',
 };
 
 /** The caption is normative text; a typo that drifted into a claim would defeat the
@@ -46,15 +47,26 @@ export function createDopamine() {
   let counts = { reward: 0, punish: 0 };
   let last = null;
 
-  /** `enabled` is absent from the envelope the server sends today; treat a missing flag
-   *  as "not disabled" and let `source` carry the real state. */
+  /**
+   * `unimplemented` and `disabled` are DIFFERENT states and must never render alike.
+   *
+   *   unimplemented — the reward loop does not exist in this build. Nobody wrote it.
+   *                   This is what #4 emits today and what ships if #7 lands after #6.
+   *   disabled      — the loop exists and is switched off. That is AC5's CONTROL
+   *                   condition, the thing every learning claim is measured against.
+   *                   "The control is running" is a result; "nobody built it" is not.
+   *
+   * `source` is authoritative for both. `enabled: false` is #7's flag and is honoured
+   * too, but a `source` of `disabled` means the control condition whatever the flag
+   * says — the field that names the state outranks the field that summarises it.
+   */
   const stateOf = (r) => {
     // No reward object has ever arrived. Distinct from "the loop is running and has
     // nothing to report": before the first frame this zone has no data source at all,
     // and drawing its full live treatment would present empty bars as measurements.
     if (!r) return 'nodata';
     if (r.source === 'unimplemented') return 'unimplemented';
-    if (r.enabled === false) return 'off';
+    if (r.source === 'disabled' || r.enabled === false) return 'off';
     if (!r.source || r.source === 'none') return 'idle';
     return 'live';
   };
@@ -96,14 +108,15 @@ export function createDopamine() {
     render(ctx, rect, mode, prostheticSites) {
       const st = stateOf(last);
       const dim = st === 'off' || st === 'unimplemented' || st === 'nodata';
-      const caption = st === 'off' ? CAPTION.off
-        : st === 'unimplemented' ? CAPTION.unimplemented : CAPTION.live;
+      const caption = CAPTION[st] || CAPTION.live;
 
       ctx.save();
       if (dim) ctx.globalAlpha = 0.4;
 
+      // Amber for "never built", grey for "built and switched off". The colours carry
+      // the distinction as well as the words, because the words get truncated first.
       const chip = st === 'unimplemented' ? ['NOT IMPLEMENTED', C.warn]
-        : st === 'off' ? ['LOOP OFF', C.key]
+        : st === 'off' ? ['LOOP OFF — CONTROL', C.key]
         : st === 'nodata' ? ['NO DATA', C.key]
         : st === 'idle' ? ['NO EVENTS', C.key] : null;
 
@@ -216,12 +229,20 @@ export function createDopamine() {
       eff('punish', c.punish, 104);
       y += 22;
 
-      const sites = Array.isArray(prostheticSites) ? prostheticSites : [];
+      // #7 puts the disclosure INSIDE the reward object so a logged `value` can never
+      // be separated from it; prefer that over `ready`, which is only the fallback for
+      // a frame that predates the loop.
+      const inner = last?.prosthetic_sites;
+      const sites = Array.isArray(inner) ? inner : Array.isArray(prostheticSites) ? prostheticSites : null;
       ctx.font = FONT(9);
-      ctx.fillStyle = C.prosthetic;
-      // Always shown, never truncated away: #7 puts disclosure in the same object as
-      // the value by design and this block keeps it there.
-      const text = sites.length ? `prosthesis: ${sites.join(' ')}` : 'prosthesis: none';
+      // #7 returns ["unknown"], never []. An empty list would read as "no prosthesis",
+      // which is a false statement rather than a missing one — so it is surfaced as the
+      // fault it is instead of being rendered as clean.
+      const broken = Array.isArray(sites) && sites.length === 0;
+      ctx.fillStyle = broken ? C.bad : C.prosthetic;
+      const text = broken ? 'prosthesis: EMPTY LIST — disclosure missing (bug)'
+        : sites === null ? 'prosthesis: not reported'
+        : `prosthesis: ${sites.join(' ')}`;
       const words = text.split(' ');
       let line = '';
       for (const w of words) {
