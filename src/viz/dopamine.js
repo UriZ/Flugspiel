@@ -32,6 +32,35 @@ export function captionIsSafe(text) {
   return text === CAPTION.live || !FORBIDDEN.test(text);
 }
 
+/** What replaces a caption that fails. Must itself pass, or this file cannot load. */
+const WITHHELD = 'Caption withheld: failed the honesty check — see #7.';
+
+/** Every caption is checked once, here, at module load. This module is on the panel's
+ *  own import path, so the check runs before the zone can render anything, and it costs
+ *  nothing per frame.
+ *
+ *  Deliberately not at render time. Render only ever sees the caption for the CURRENT
+ *  state, so a claim that drifted into `CAPTION.off` would go unnoticed until somebody
+ *  disabled the reward loop — which is exactly the condition under which the honesty
+ *  clause matters most. Checking the table covers all of them.
+ *
+ *  A caption that fails is REPLACED, not merely reported. The zone must not render a
+ *  claim #7 has disproved, and the substitute says why it is there rather than going
+ *  quiet — the same treatment `_renderBars` gives a missing prosthesis disclosure, for
+ *  the same reason: a normative claim that is wrong must not render as clean. */
+const withheld = [];
+for (const key of Object.keys(CAPTION)) {
+  if (captionIsSafe(CAPTION[key])) continue;
+  withheld.push(key);
+  CAPTION[key] = WITHHELD;
+}
+if (withheld.length) {
+  // Loud as well as visible: the substitution is what a viewer sees, but the edit that
+  // caused it is a developer's, and the console is where a developer is looking.
+  console.error(`dopamine: caption(s) ${withheld.join(', ')} failed the honesty check `
+    + 'and were withheld — see FORBIDDEN in src/viz/dopamine.js');
+}
+
 const DEFAULT_POINTS = 600;
 
 export function createDopamine() {
@@ -175,7 +204,8 @@ export function createDopamine() {
       // If it does not fit it is truncated; if the zone cannot hold a line at all the
       // chip still carries the state, which is the part that must not be lost.
       ctx.font = FONT(9);
-      ctx.fillStyle = C.key;
+      // A withheld caption is a fault, not a state, and is coloured like one.
+      ctx.fillStyle = caption === WITHHELD ? C.bad : C.key;
       const chipW = chip ? ctx.measureText(chip[0]).width : 0;
       const capX = mode === 'bar' ? rect.x + 78 + chipW + 10 : rect.x;
       const room = rect.x + rect.w - capX;
