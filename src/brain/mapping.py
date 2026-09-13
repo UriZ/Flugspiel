@@ -112,9 +112,19 @@ class Mapping:
         if not isinstance(game, str) or not game:
             raise MappingError("game must be a non-empty string")
 
+        # The resolution of the luminance image, and nothing more. It used to have to equal
+        # the connectome's `ol_hex1` range or the azimuth map silently corrupted (#28);
+        # `photoreceptor_columns` now rescales that range onto it, so any value works. What
+        # it cannot do is add detail the brain does not have: the fly's angular resolution
+        # is fixed at however many hex columns the connectome annotates (36 here), so above
+        # that the photoreceptors undersample a finer image rather than seeing more.
+        # 2 and not 1: the whole design is bilateral, and both the encoder's loom routing
+        # and the decoder's same-half test split on `column(x) < columns/2`. At 1 every
+        # position is on the left, so `loom_R` is pinned at 0 and half the fire pathway is
+        # dead — silently, which is the same class of defect as the range mismatch above.
         columns = raw.get("columns")
-        if not isinstance(columns, int) or isinstance(columns, bool) or columns < 1:
-            raise MappingError(f"columns must be an int >= 1, got {columns!r}")
+        if not isinstance(columns, int) or isinstance(columns, bool) or columns < 2:
+            raise MappingError(f"columns must be an int >= 2, got {columns!r}")
         max_inject = _num(raw, "max_inject", "mapping", low=1e-9)
 
         hex_flip = raw.get("hex_flip", {})

@@ -136,6 +136,14 @@ def photoreceptor_columns(W: sparse.spmatrix, meta: BrainMeta, columns: int,
     unanimous, which is why the optic-column xlsx is not needed. hex1 is the left-right
     axis (corr with soma X = +0.487 on L, -0.558 on R); hex2 is dorsoventral.
 
+    The hex domain is **measured from the brain and rescaled onto `[0, columns-1]`**, not
+    assumed to equal it. `h - 1` and `columns - h` land correctly only when the hex range
+    happens to be `1..columns`, which is true of this connectome at `columns = 36` and of
+    nothing else — at 18 half of each retina welded onto one edge pixel and at 72 the two
+    eyes tiled disjoint halves of a screen they should each span, silently (#28). The
+    rescale is exact at the shipped value: with hexes `1..36` and `columns = 36` it
+    reproduces both old branches neuron for neuron.
+
     Costs ~0.08 s on the real connectome. Called once per `Encoder`, never per frame.
     """
     W = sparse.csc_matrix(W)
@@ -143,6 +151,8 @@ def photoreceptor_columns(W: sparse.spmatrix, meta: BrainMeta, columns: int,
     known = np.isfinite(hex1)
     binned = np.where(known, hex1, 0.0).astype(np.int64)
     nbins = int(binned.max()) + 1 if known.any() else 1
+    lo_hex = int(binned[known].min()) if known.any() else 0
+    span = (int(binned[known].max()) - lo_hex) if known.any() else 0
 
     out = np.full(meta.n, -1, dtype=np.int16)
     for j in np.flatnonzero(np.isin(meta.cell_type, list(types))):
@@ -152,7 +162,9 @@ def photoreceptor_columns(W: sparse.spmatrix, meta: BrainMeta, columns: int,
         if not ok.any():
             continue  # no hex-carrying partner: reported as EncodedFrame.unassigned
         h = int(np.argmax(np.bincount(binned[targets[ok]], weights=weights[ok], minlength=nbins)))
-        c = (columns - h) if hex_flip.get(str(meta.side[j]), False) else (h - 1)
+        c = round((h - lo_hex) / span * (columns - 1)) if span else 0
+        if hex_flip.get(str(meta.side[j]), False):
+            c = columns - 1 - c
         out[j] = min(max(c, 0), columns - 1)
     return out
 
