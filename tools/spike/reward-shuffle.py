@@ -324,11 +324,13 @@ def trajectory(cfg: RewardConfig, trace: dict) -> None:
     # path the server uses, so a broken trace shows up here as it would on the brain.
     kc = np.flatnonzero(np.char.startswith(brain.meta.cell_type, "KC"))
     print(f"lr={cfg.lr}  t_survive={cfg.t_survive}  tau_decay={cfg.tau_decay}\n")
-    print("sess  dur   losses  R  P   min w/w0 (punish)  end w/w0")
+    # Both compartments, because they are the evidence that each answers only to its own
+    # valence: a reward must move `reward` and leave `punish` at its punishment-only path.
+    print("sess  dur   losses  R  P   min w/w0 (punish)  end w/w0   max w/w0 (reward)")
     for i, session in enumerate(trace["sessions"]):
         states = wire(session)
         loop.reset()
-        lo, last, si = 1.0, 1.0, 0
+        lo, last, si, hi = 1.0, 1.0, 0, 1.0
         n = {REWARD: 0, PUNISH: 0}
         for step in range(int(states[-1]["t"] / dt)):
             while si < len(states) and states[si]["t"] <= step * dt:
@@ -337,10 +339,11 @@ def trajectory(cfg: RewardConfig, trace: dict) -> None:
                 if ev.kind in (REWARD, PUNISH):
                     n[ev.kind] += 1
             loop.observe(kc)
-            last = loop.efficacy()[PUNISH]
-            lo = min(lo, last)
+            eff = loop.efficacy()
+            last = eff[PUNISH]
+            lo, hi = min(lo, last), max(hi, eff[REWARD])
         print(f"{i:>4}  {session['dur']:>5.0f}s {len(session['losses']):>5}  "
-              f"{n[REWARD]:>2} {n[PUNISH]:>2}   {lo:>14.4f}  {last:>9.4f}")
+              f"{n[REWARD]:>2} {n[PUNISH]:>2}   {lo:>14.4f}  {last:>9.4f}   {hi:>14.4f}")
 
 
 def direction(cfg: RewardConfig) -> None:

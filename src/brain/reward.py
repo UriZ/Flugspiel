@@ -345,24 +345,31 @@ class RewardLoop:
             return self._resync(alive, t, "anomalies")
         if self._armed and t - self._armed_at >= self.cfg.t_survive:
             # One-shot: the game can stall with launchers still standing, and a repeating
-            # survival reward would then pay out forever (#7 §4.2). With `_resync` leaving
-            # the timer disarmed, this caps a session at one reward per punishment.
+            # survival reward would then pay out forever (#7 §4.2). With `_resync` arming,
+            # a session pays at most one reward per punishment plus one for the opening
+            # interval — the cap §4.2 and R4 state.
             self._armed = False
             return RewardEvent(REWARD, self.cfg.k_event, t)
         return NO_EVENT
 
     def _resync(self, alive: int | None, t: float, counter: str) -> RewardEvent:
-        """Disarmed, deliberately: at a session start the fly has not survived anything.
+        """Armed, with the timer restarted here: a resync opens a survival interval.
 
-        #7 §4.2's prose has the timer arming at session start too, which would pay out for
-        an interval whose opening boundary is the game being started rather than anything
-        the fly did — the reward-for-nothing failure the `session` counter exists to
-        prevent, arriving by another door. §4.3 is the normative section and it wins; the
-        TL confirmed it. The observable consequence is that the first survival interval of
-        a session is unpayable, so rewards can never outnumber punishments.
+        #7 §4.3 step 3 says disarm, and §4.2 says the timer arms "after each punishment
+        and at session start". They cannot both hold, and **§4.2 wins** — TL decision,
+        reversing an earlier ruling for §4.3, on the strength of a measurement: leaving it
+        disarmed meant no reward could ever fire across a whole session of survival until
+        the fly was first punished. Nothing behavioural distinguishes surviving from a
+        game start from surviving after a loss; paying for one and not the other would be
+        an artefact of where the boundary sits, which is the failure the `session` counter
+        exists to prevent, arriving from the other side. §4.2 is also the only reading
+        under which the spec's own stated cap is reachable.
+
+        `armed_at = t` is what keeps this safe: the interval starts *now*, so time spent
+        outside `playing` never counts toward a payout.
         """
         self._prev_alive = alive
-        self._armed, self._armed_at = False, t
+        self._armed, self._armed_at = True, t
         self._cumulative = 0.0
         self._telemetry[counter] += 1
         return NO_EVENT
