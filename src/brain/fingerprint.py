@@ -126,12 +126,14 @@ def connectome_digest(W, meta: BrainMeta) -> str:
     `PARTITIONS`, which `identity` already carries.
 
     So a rebuild that reordered within a column would report a mismatch it should not, and
-    canonicalising first would remove that class. The reason to do it is stronger than
-    tidiness and is the one thing the paragraph above depends on: the no-duplicates premise
-    is a property of *canonical* CSC, not of CSC, and a matrix carrying duplicate entries in
-    a column really would make within-column order trajectory-relevant. Canonical form is
-    what rules that out. Deliberately **not** done here — it belongs in its own change, with
-    its own check of whether the digest moved (#37).
+    canonicalising first removes that class. The reason to do it is stronger than tidiness
+    and is the one thing the paragraph above depends on: the no-duplicates premise is a
+    property of *canonical* CSC, not of CSC, and a matrix carrying duplicate entries in a
+    column really would make within-column order trajectory-relevant. Canonical form is
+    what rules that out, and `connectome.load` now establishes it at the boundary, as a
+    guard that does not run on an artifact already canonical (#51). Nothing is
+    canonicalised here: this function hashes what it is handed, and a caller that built a
+    matrix some other way is hashing what its kernels will actually read.
 
     Fed through a buffer rather than `tobytes()` to avoid copying the whole matrix.
     """

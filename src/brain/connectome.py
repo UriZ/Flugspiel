@@ -663,6 +663,28 @@ def load(data_dir: Path | None = None) -> tuple[sparse.csc_matrix, BrainMeta]:
         W.check_format(full_check=True)
     except ValueError as exc:
         raise ConnectomeError(f"{wpath} is corrupt ({exc}); delete it and run: {_BUILD_CMD}") from exc
+    # Canonical form is a premise, not tidiness, and this is the boundary where an
+    # artifact whose provenance is unknown enters the process. `connectome_digest` covers
+    # the stored order of the row indices within a column, and the argument that this
+    # order cannot move the trajectory holds *only* because canonical CSC carries no
+    # duplicate row index inside a column: with duplicates, the kernel accumulator would
+    # be written more than once per column and the order really would decide the result
+    # (#51). Establishing the premise here is what lets that argument be made at all.
+    #
+    # `has_canonical_format`, not `has_sorted_indices`: sorted is the cheaper half of
+    # canonical and is not the half the premise needs — sorting a matrix that carries
+    # duplicates leaves it carrying them.
+    #
+    # A guard, so the common path neither copies nor rewrites: the built artifact comes
+    # out of a `coo -> tocsc()` that already merges duplicates, so the branch does not
+    # run on it. And in place rather than through `sorted_indices()`, which is safe only
+    # because of where this is — `W` was created by `load_npz` a few statements ago and
+    # nothing else holds a reference. `sum_duplicates()` mutates, which is exactly why
+    # `FlyBrain.__init__` copies a matrix a caller hands it (#7 §6); this is the one
+    # place that can canonicalise without paying for a copy of the whole matrix.
+    if not W.has_canonical_format:
+        W.sum_duplicates()
+
     # Structure is not provenance. Nothing here authenticates the artifact — see #20 for
     # why it is not hash-pinned the way SOURCES pins the raw downloads — and the checks
     # are one-sided: they reject a matrix claiming more drive than build() would have
