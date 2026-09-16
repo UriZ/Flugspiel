@@ -3245,3 +3245,155 @@ no claim-shaped hit.
 **Improvement Insights**:
 - [judge.md]: for a Python dead-symbol sweep, count **NAME tokens** via `tokenize`, not regex over text — a regex counts a symbol named in its own docstring as a use, which is exactly the case being hunted. And expect decorator-registered entry points (FastAPI routes, `click`, `pytest` fixtures) as the standard false positive; clear them by hand.
 - [criteria.md]: the companion clause added for row 11 covers *exported symbol with no call site*. Observation 2 is a **second shape** it does not cover — a guard that executes but whose condition an upstream sanitiser has made unsatisfiable. Worth naming, since #17 and this one differ in exactly that way and only #17's shape is currently described.
+
+---
+### [2026-09-13 23:55] — developer — #40
+**Task**: Build the retinotopic aim encoder and the fitted readout — `azimuth_sided_anat`, `LinearReadout`, decoder servo, per the FINAL spec **as edited**
+**Result**: PARTIAL — encoder, readout, decoder and config shipped and verified; **R8 FAILS as written (0.652 vs ≤0.55)** with a measured cause; R3b partial on an absolute floor derived under a different stimulus protocol
+**Files changed**: `src/brain/encoder.py`, `src/brain/decoder.py`, `src/brain/mapping.py`, `src/brain/mappings/missile_attack.json`, `src/brain/readout.py` (new), `src/brain/readouts/aim_ridge.npz` (new), `tools/fit-aim-readout.py` (new), `tools/spike/aim-closed-loop.py` (new), `.gitignore`, `tests/test_encoder.py`, `tests/test_decoder.py`, `tests/test_mapping.py`, `tests/test_brain_loop.py`, and three of #40's probes (`aim-decodability.py`, `gain-sweep.py`, `retinotopic-loom.py`)
+**Key changes**:
+- `encoder.py` — `azimuth_code` vector signal + per-site `CODE_MAPS` (`azimuth_sided_anat`, `azimuth_sided_random`); `looming_columns` votes over W's **rows** (presynaptic) against `photoreceptor_columns`' columns, both now one `_hex_vote`; `_sided_deal` keeps the connectome's **order** and discards the absolute hex value by construction; `_drive_matched` normalises **per side** so the coded site injects exactly what the scalar site it replaces did; `EncodedFrame.coded_sites`
+- `readout.py` — `LinearReadout` keyed on **MaleCNS body ids**, `bind()` fails loudly naming missing ids, `load()` rejects incomplete provenance
+- `decoder.py` — `aim.mode: readout` loads/binds/servos (`tau_servo 0.18`, `rate_max 3.0`); `calibrate()` returns early **before** `brain.reset()`, which fixes both `ws_server.py` call sites with **zero** edits there; `aim_index`/`aim_cmd` still published as the A/B instrument
+- `missile_attack.json` — `looming_code` enabled; `looming_L`/`looming_R` and both `aim_bias_*` → `enabled: false` (kept as A/B controls); `aim.mode: "readout"`
+**Testing**: `pytest -m "not realdata"` **194 passed / 11 deselected / 0 skipped**; `pytest -m realdata` **11 passed / 194 deselected / 0 skipped** (339 s) — 205 total, zero skips; `npm test` **38 pass / 0 skipped**; `fingerprint --check` **ok on constants, connectome digest and spike digest** (the free-running trajectory does not move; no `--update`). **R5 by execution**: `W.data` sha256 `6af1f922…7053` byte-identical across 2,000 readout-mode steps. Nine existing assertions updated where the config change falsified them; none deleted.
+**Measurements**
+- **R-new reproduced exactly**: anat 0.7724 / 0.3700, rand 0.7459 / 0.1489 → **2.485×** (≥2.0). Re-verified a second time *after* the config change with the fixed probe: identical to four decimals
+- **Fit under `looming_code`** (`fit-aim-readout.py --ticks 5000 --k 64`, single-target protocol): holdout **0.8052**, cross-seed **0.7901**, shuffled **−0.0009**, within-hemifield **+0.2550 / +0.2567** against the shipped encoder's **−0.5194 / −0.4505**. R3c's floor was 0.6016 → **PASS by 0.20**. K=64 is now the best cell in the sweep on both held-out measures, not a compromise
+- **Closed loop, 3×300 s**: readout **0.652**, prosthesis **0.848**, laterality **0.976**; readout **never** touches a rail, laterality sits on one 46% of the time
+- **The R8 shortfall is the scene, not the loop**: same everything, 1 missile vs 3 → holdout 0.8052 vs 0.4462, projected 0.283 vs 0.613, **closed loop 0.402 vs 0.652**. 0.55 was derived from a single-target projection; an argmax over three simultaneous bumps is not in a linear readout's reach
+- **A train/deploy mismatch of my own, measured and fixed**: fitted on 1 missile, deployed into 3 → 0.732; re-fitted on the deployment distribution → 0.652. The probe now *imports* `Sky` from the fitter rather than copying it
+- **λ was being chosen at the grid floor** (1e-3, then 1e-8 after widening five orders of magnitude) with every held-out number identical to four decimals. Replaced the argmax with *the largest λ within 0.002 of the best inner score* → λ=464, off the edge, held-out numbers moved ≤0.0011
+- **`max_inject` clips the coded site by 0.6%** at az 0.50/0.52 with `health = 0.0`; exact everywhere else
+- **Deviation from §5.1's formula, deliberate**: normalised **per side**, not per site. §5.1 as written gives 2× the drive the measurement used. Cost: a target straddling the midline drives both sides, 1.90× at az 0.50, confined to |az−0.5| ≲ 0.08
+**Reported, not fixed (other lanes)**: `reward.py:205` discloses `prosthetic_sites` (now truthfully `[]`) and knows nothing of `coded_sites`, so a #7 learning claim would under-disclose; `ws_server.py:132` likewise at handshake; `telemetry()["aim_readout"]` is 792 B/frame ≈ 40 KB/s for a session-constant dict that belongs in `ready_message()`
+**Label I believe is next**: **`qa`** (code review disabled for this change). Not set by me.
+**Improvement Insights**:
+- [CLAUDE.md]: add — **a new config entry can silently retarget existing probes.** Naming my site `looming_code` re-pointed three probes that select with `startswith("looming")`, one of which is the probe that measured a headline criterion; re-running it after my change would have produced a wrong number attributable to nobody. Rule: **after adding a config key or site, grep the probes for prefix/index-based selection of the thing you added next to.** `sites[1]` and `startswith(...)` are the two forms.
+- [architect.md]: add — **state the stimulus protocol a numeric threshold was derived under, in the criterion itself.** R8's 0.55 and R3b's 0.55 were both derived from a single-target projection and are being applied to a three-target deliverable. Neither criterion says "single target", so both read as implementation failures when they are protocol mismatches. One clause — "measured with N missiles in the sky" — would have made that visible when the criterion was written rather than at the end.
+- [developer.md]: add — **fit and evaluation must share one stimulus generator, by import and not by copy.** My own readout lost 0.08 of closed-loop ratio to a one-vs-three-missile mismatch between two files that each looked correct. The generic form: any measurement with a train half and a test half should have exactly one definition of the world.
+- [workflow]: the TL brief's "message me the moment you have the first measured arm" was worth the round trip — reproducing R-new before writing any code meant the 2.49× was known-good before anything was built on it, and it later became the control that proved the probe trap was closed.
+
+---
+### [2026-09-14 00:35] — developer — #40 (follow-up)
+**Task**: The TL's two open questions — is R-new seed-robust, and does it survive the shipped per-side normaliser with the midline band at its natural rate?
+**Result**: COMPLETED — **R-new holds in four independent forms (2.485× / 4.114× / 3.343× / 3.598×, minimum 2.485 against a 2.0 threshold)**, and the shipped encoder **beats** the probe arm it was specced from
+**Files changed**: `tools/spike/retinotopic-loom.py` (new `--shipped-code` / `--shipped-code-map` arms; existing arms untouched)
+**Key changes**:
+- `retinotopic-loom.py` — a `ship_{anat,random}` arm that injects through `Encoder(Mapping.default())` itself rather than the probe's own profile, so the comparison runs on the drive matching that ships
+**Measurements**:
+- **Seed robustness**: seed 0 → anat 0.7724 / 0.3700, rand 0.7459 / 0.1489 (**2.485×**); seed 1 → anat 0.7768 / 0.3439, rand 0.7316 / 0.0836 (**4.114×**). The ratio is imprecise because the **denominator** is what moves — the random arm shifted 0.065 on an *identical* column map while the anatomical arm shifted 0.026. **Quote R-new as a range, 2.5–4.1×, not as 2.49.** The anatomical map is also the steadier of the two
+- **Strictest R-new**, both arms through the shipped encoder, differing in **ordering alone**: seed 0 → 0.4604 vs 0.1377 (**3.343×**); seed 1 → 0.4757 vs 0.1322 (**3.598×**)
+- **The midline deviation costs nothing and gains 0.11.** Shipped per-side normaliser vs the probe's global one, anat: full 0.7817/0.7928 vs 0.7724/0.7768; hemi **0.4604/0.4757 vs 0.3700/0.3439**. The 1.90× midline drive is not a tolerated cost — on this measurement it is part of why the shipped encoder resolves position better than the arm it was specced from
+- **0.7817 / 0.7928 both exceed the 0.7500 side-only ceiling**, so §5.1's arithmetic proof holds for the shipped code at both seeds, not only for the probe arm
+**Testing**: `pytest -m "not realdata"` **194 passed / 11 deselected / 0 skipped** after the probe change (probe is not imported by the suite; run as a regression check on the working tree)
+**Improvement Insights**:
+- [criteria.md]: add — **a criterion whose denominator is a noisy control needs a range, not a point.** R-new read 2.485× and 4.114× across two stimulus seeds on an *identical* column map, because the random control's within-hemifield R² is itself unstable (0.084–0.149). A criterion stated as "measured 2.49" invites a re-run at 4.1 to be read as a discrepancy. State the threshold, the measured range, and the seeds it spans.
+- [architect.md]: add — **when a spec's recommendation is measured through a probe, say whether the shipped code will share the probe's harness.** §5.1's numbers came from the probe's global drive normaliser; what ships normalises per side, and the two differ by 0.11 within a hemifield. Nobody would have known to compare them if the deviation had not been reported, and the comparison turned out to favour the shipped code.
+
+---
+### [2026-09-14 01:40] — developer — #53, #54, #52, #55, #56
+**Task**: The `src/viz/` + `src/ui/` cluster — one rendering defect and four dead-symbol / wrong-comment defects
+**Result**: COMPLETED — all five fixed, each verified by execution through the real `createPanel`; four commits `ec3fae8`, `43056bc`, `1802d8c`, `a6440d2`
+**Files changed**: `src/viz/descending.js`, `src/viz/raster.js`, `src/viz/panel.js`, `src/viz/palette.js`, `src/viz/activity.js`, `src/viz/dopamine.js`, `src/ui/spike-codec.js`, plus new probes `tools/spike/viz-dn-strip.{mjs,html}` and `tools/spike/viz-honesty.mjs`
+**Key changes**:
+- `descending.js` `renderStrip` — two passes: reduce each pixel column to its brightest occupant, then draw one rect per occupied column. Bounded by `nDn + 2·plotW`, independent of the lit count. Magenta now means a prosthetic neuron **fired**, not that one shares the column
+- `spike-codec.js` — `unpackInto` **removed**, `spikeAt` added; `activity.js:117` calls it. Bit order expressed once in `src/`
+- `raster.js:57` — denominators come from the artifact via `classSizes`, not from `ready.regions`, which carries no sizes
+- `panel.js` `scaleBar` — both gates stated; the height floor derived as `BAR_INSET + LABEL_GAP + LABEL_LINE` = 24, same value, same behaviour
+- `palette.js` `rampCss` — takes the 0..255 level and quantises `>> 2` like the map; `raster.js` calls it
+- `dopamine.js` — `captionIsSafe()` runs at **module load** over the whole caption table; a failing caption is replaced and drawn in the fault colour, and reported once on the console
+**Testing** (there are **no** automated tests over `src/viz/` or `src/ui/` — `npm test`'s 38 green are vacuous about every file here, so everything below was driven):
+- **#53 before/after, real `createPanel`, 60 DNs per width on a fixed stride, 340 ms settle, dpr 1**: invisible **0.0 / 21.7 / 48.3 %** at cssW 900 / 720 / 500 → **0.0 / 0.0 / 0.0 %**. The issue measured 16.7 / 51.7 on a different sample; the artifact-derived column-sharing counts (0 / 504 / 1230 of 1314) bracket both
+- **AC3 cost**: the DN-lit-proportional render cost (quiet map, 0 → 1314 lit, which isolates it from `putImageData` and the marker arcs) is **1.80 / 1.60 ms before and 1.50 / 1.70 ms after** over two rounds of 200 frames at loadavg 19–24 — the arms straddle each other. `push` 2.20 quiet / 3.10 burst, identical on both arms, which also answers #55's cost question
+- **#52 both arms**: clean load silent and captions drawn normally; poisoned `CAPTION.off` caught at module load, reported once, drawn as `Caption withheld…` in `#d05a4a`. Poisoned in the **served** copy only
+- `tools/spike/viz-panel-probe.mjs`: **59.9 fps** at 8.5 % firing, 42.5 at 50 %, four reward-state assertions pass, six ladder sizes render, **no page errors**
+- `npm test` → **38 pass / 0 fail / 0 skipped**
+**Findings beyond the filed issues**:
+- **#54's second item is misdescribed in the issue.** `rect.h < 24` is a minimum **height**; the docstring's claim is about **width** and is *true* — the width gating really is fit-based. The defect is an **undocumented second gate of a different kind**, and the height floor exists for a real reason: bar and label are placed upwards from the bottom edge, so a shorter rect draws the label outside the pane
+- **The mandated sweep for a second wrong comment in the same files came back clean**, and seven numeric claims were verified against the artifact: 27 classes / 15 under 500, `ol_intrinsic` 89,403, `vnc_motor` 708, 26,062 unpositioned, VNC 15,618, 12 wired DNs, and "the raster stays dark until the artifact lands". `dopamine.js`, `layout.js` and `src/ui/` were **not** swept
+- **The midline block does not have #53's defect** — `dn_col` numbers those 10 neurons 0..9 in their own row, so no two share a column at any width. Left alone rather than "fixed"
+- **A probe that locates a zone by its background colour finds the wrong zone.** My first `stripBox()` took the bounding box of `#141414` and got nearly the whole panel, because antialiased text elsewhere lands on that exact value. Replaced by capturing the renderer's own `fillRect` call — and the wrong version still produced a plausible number
+**Label I believe is next**: **`qa`** for all five (code review disabled). Not set by me.
+**Improvement Insights**:
+- [qa.md]: add — **a probe must not recompute the geometry it is measuring.** The DN-strip question is "does the strip change when this neuron fires", and answering it geometry-free is what makes the probe unable to agree with a broken renderer. Where a rect or an index is needed, capture it from the subject's own draw call rather than deriving it in parallel.
+- [CLAUDE.md]: add to the reachability rule — **when a guard is moved rather than wired, state which arm the alternative placement would have missed, and execute that arm.** #52's poisoned caption is `off`, not the rendered state: it is the case a render-time call site would have passed, and running it is the difference between a justified design choice and an assertion.
+- [developer.md]: add — **isolate the quantity a cost criterion is about.** Comparing two burst renders put my change 39 % slower and it was machine load: the burst number is dominated by `putImageData` and 1,314 marker arcs, neither of which I touched. Differencing two arms that differ *only* in the lit count showed the real answer, 1.5–1.8 ms on both sides.
+- [workflow]: the five issues were ordered #53 first because it is the only one a user can see, and that was right — but #54, #55 and #56 all turned out to need the same whole-file read of `raster.js`/`palette.js`/`activity.js`, so batching the reads once and then fixing in issue order cost less than one pass per issue would have.
+
+---
+### [2026-09-14 02:30] — developer — #48
+**Task**: Decide and fix the `prosthetic_sites == []` disclosure contract, whose premise my own #40 work had changed
+**Result**: COMPLETED — `d051f52`. Three-state disclosure at the producer, `coded_sites` added, panel and #7's contract probe brought into agreement
+**Files changed**: `src/brain/reward.py`, `src/brain/mapping.py`, `src/viz/dopamine.js`, `tools/spike/reward-shuffle.py`, `tools/spike/viz-honesty.mjs`
+**Key changes**:
+- `reward.py` `_disclose()` — `["unknown"]` / `["none"]` / names. **`[]` is unrepresentable**, and the sentinels sit *inside* the list because #7 §8 requires the disclosure to survive being read apart from its number, and a flag in a neighbouring field does not travel with a grepped line
+- `reward.py` — `coded_sites` beside `prosthetic_sites`, same discipline. Two fields because they are two different claims and neither can express the other's
+- `mapping.py` — a site named `none`/`unknown` is rejected at load, so the value-space overload is paid for rather than hoped about
+- `dopamine.js` — one `disclosed()` classifier, five claims in five colours, applied to both fields; the `ready` fallback keeps the *opposite* rule (`[]` is honest there, #45)
+- `reward-shuffle.py` — the assertion that encoded the old contract, updated, plus "neither disclosure can be `[]` with a real encoder"
+**Testing**: `pytest -m "not realdata"` **194 passed / 11 deselected / 0 skipped**; `-m realdata` **11 passed / 0 skipped** (230 s); `npm test` **38 pass / 0 skipped**; `reward-shuffle.py --contract` **17 PASS / 0 FAIL**; `viz-panel-probe.mjs` four reward assertions pass, no page errors, 59.9 fps; `viz-honesty.mjs` both caption arms unchanged. All five disclosure states read off the panel's own `fillText` calls, before and after, via a new `--disclosure [--legacy]` mode
+**Findings**:
+- **The renderer has been crying wolf on every frame since #40 landed.** Reproduced: shipped mapping → `reward.prosthetic_sites == []` → red `EMPTY LIST — disclosure missing (bug)`. It was right to, under the old contract; the fix belongs at the producer
+- **The existing `["unknown"]` sentinel was itself mis-rendered** — drawn as `prosthesis: unknown` in **magenta**, the colour the file's own comment reserves for "a prosthesis that is actually there". Measured against `HEAD`, not read off the source. Latent, because `ws_server` always supplies an encoder
+- **`[]` is both a fault and an honest state, depending on the field**: `ready.prosthetic_sites` is a raw config fact where `[]` is honest; `reward.prosthetic_sites` is a disclosure bound to a number where `[]` is a contract violation. Opposite rules, documented at both sites — and keeping the sentinel out of the encoder also kept `encoder.py` out of this change while `qa-aim` was reading it
+- **`tools/spike/reward-shuffle.py:216` encoded the defective behaviour and passed while it held** — the third promoted probe this session whose assertion had to move with a contract
+**Held**: `ws_server.py:132`'s one-line `coded_sites` addition, pending #7's user approval. Per-frame disclosure is complete without it; the handshake is not
+**Label I believe is next**: **`qa`**. Not set by me.
+**Improvement Insights**:
+- [CLAUDE.md]: add — **when a change makes a previously-impossible value normal, grep the consumers for code that treats it as impossible.** #40 made `prosthetic_sites == []` the shipped state and turned a correct fault-detector into a per-frame false alarm that nobody noticed for a day. The producing change is where that sweep belongs, not the issue filed afterwards.
+- [qa.md]: add — **a sentinel is only unambiguous if the value space it borrows is closed.** `["unknown"]` had been in the wire since #7 and rendered as a site name in the prosthesis colour. Where a sentinel shares a list with real names, either reserve the names at the point they are validated or carry the state out of band — and check how the consumer draws it, because that is where the ambiguity surfaces.
+- [architect.md]: add — **two disclosures that answer different questions must not be collapsed into one field.** `prosthetic_sites: ["none"]` is true and incomplete: it cannot express "the spatial basis of an input is ours", which is what #40 actually shipped. The test for whether a second field is needed is whether the first one's *honest* value would mislead.
+
+---
+### [2026-09-14 00:10] — judge — #59 AC1 (MBON fan-out)
+**Task**: AC1 only — rank every neuron by MBON input fraction; does the mushroom body reach any usable motor readout?
+**Answer**: **NO. #59 stops at AC1.** AC2/AC3/AC4 not started.
+**Read-only on `src/`.** Only file written: `tools/spike/mbon-fanout.py` (expected output in header). Ports 8000/8099 untouched. Query over `data/weights.npz` + `data/brain.npz`.
+
+**Headline**: matched for total output drive, the MBONs reach the descending population **less** than every one of 200 random central-brain sets — p(null ≥ obs) = **100.0%** on DN mean f_w, **92.5%** on DN max.
+
+**#7's figure reproduced exactly**: descending_neuron 170 of 1,314, mean f_w 0.00064, max 0.07053. That max is **DNp52** (bodyId 11121, side L, 22/352 inputs), and its largest MBON sources are **MBON25/MBON34** — the neurons #7 measured the loop shifting by 3.87 Hz. The user's challenge picked the right pathway; it is simply too small.
+
+**Fan-out**: 97 MBONs (36 types, all cb_intrinsic) reach 11,342 of 166,700 neurons (6.80%). By superclass: cb_intrinsic 10,927/32,164 receive, max f_w **0.428**; visual_projection max **0.108** (LT85 — higher than any DN); descending_neuron max 0.0705. **1,144 of 1,314 DNs receive exactly zero MBON input.**
+
+**Three independent reasons it cannot work**:
+1. **Drive-matched null** — MBONs send 2.6× more |w| than the median cb_intrinsic neuron, so the naive size-matched null was under-powered. Correcting it (MBON 203.1 vs null 203.1 ± 0.1 total |w| sent) made the result *stronger*: DN mean 0.00064 vs null 0.00367 ± 0.00086, p = 100%.
+2. **Known-positive** — KC→MBON median **0.5672**; MBON→DN median **exactly 0**. The best MBON→DN edge in the brain is **8.0× weaker than the typical KC→MBON edge**.
+3. **Dynamics** — gain 3.0, threshold 1.0, noise_amp 0.22. All 97 MBONs firing on one step give DNp52 **0.2116 V = 0.96 of a single noise event**, 21.2% of threshold. MBON25/MBON34 carry |w| 0.0290 onto it.
+
+**Two hops does not rescue it**: DN max 0.07053 → **0.02276** at two hops, 0.01397 at three — adding a hop dilutes. Two-hop DN mean still p = 100% against the matched null. The heavy MBON targets are not relays: CB1079 (f_w 0.428) reaches **1 of 1,314** DNs at 0.00009; SIP088 reaches **zero**.
+
+**Result framing (AC4)**: this is a statement about the connectome, not about our choice of neuron. #7's negative was right for a more general reason than it gave — not "DNp01 lacks an MBON edge" but "the mushroom body does not project to the descending population at all". Where it does project is central-brain interneurons and some visual projection neurons. #59's own AC4 anticipated this: *"the mushroom body modulates sensory processing rather than motor output on this connectome"* is what the data says, and it is a result.
+
+**Self-correction recorded**: my first multi-hop pass passed **CSC** arrays into `scipy.sparse.csr_matrix(...)`, which silently transposes, and reported a one-hop DN max of 0.01024 instead of 0.07053. Caught by an assertion reproducing `f1` against the independently-computed `f_w` (5.5e-01 → 9.7e-08). That assertion ships in the probe — an orientation error in `W[post,pre]` gives a plausible wrong answer nothing else errors on. I also computed a ratio-of-medians that was meaningless because the MBON→DN median is exactly zero; replaced with the max-to-median comparison and said so on the issue.
+
+**Improvement Insights**:
+- [judge.md / workflow]: when a null is built to test a hypothesis, **check whether the null set is matched on the thing that generates the statistic** before reporting. Here MBONs project 2.6× the median, so the naive null was under-powered *in the hypothesis's favour*; the drive-matched version reversed p from 40% to 92.5% and 98.5% to 100%. Correcting a null in the direction that could rescue the hypothesis is the honest order to do it in.
+- [criteria.md]: `scipy` CSC→`csr_matrix(...)` transposition deserves naming next to the packbits bit-order trap (`spike-codec.js:1`) — both produce a wrong-but-plausible answer that no test errors on, and both are guarded the same way: an assertion reproducing a known quantity two ways.
+
+---
+### [2026-09-14 03:05] — developer — #57, #36 (remainder), #48 (held line)
+**Task**: The three items unblocked by `ws_server.py`'s release
+**Result**: COMPLETED — `31c1cb6`, `afb72e9`
+**Files changed**: `src/server/ws_server.py`, `src/ui/status-bar.js`, `src/ui/game-host.js`, new `tools/spike/ws-frame-cap.py`
+**Key changes**:
+- `ws_server.py` `Session._read` — `_over_cap()` on every inbound frame, closing 1009 as `ws_max_size` would. The cap is the application's; the launch argument stays as the earlier rejection point
+- `ws_server.py` `ready_message()` — `coded_sites` beside `prosthetic_sites`, the handshake half of #48. Raw lists, where `[]` is honest, unlike the reward block's sentinels
+- `_handle`, `status-bar.js`, `game-host.js` — three comments that called `halted` unconditionally terminal
+**Testing**:
+- **#57 under both invocations, before and after** (`ws-frame-cap.py`, real connectome, real client, ports 8461-8478 — never 8000/8099): HEAD closes 1009 under `python ws_server.py` and **does not close** under `uvicorn …:app`; the working tree closes 1009 under both. Under-cap frames accepted with a pong in every arm
+- **Bytes, not characters**: 65,537 two-byte characters is **131,074 bytes** — over the cap with a character count under it. `_over_cap` catches it; a `len(raw)` check would not
+- **AC3 p95**, 3 interleaved rounds × 198 samples on a 972-byte state: median 19.8–20.1 ms, p95 21.8–22.8 ms on **both** arms, against #4 AC2's 50 ms
+- `ready_message` checked directly, including that the returned lists are copies
+- `pytest -m "not realdata"` **194 passed / 11 deselected / 0 skipped**; `npm test` **38 pass / 0 skipped**
+**Findings**:
+- **`ws_server.py` carried two comments contradicting each other about the same invariant**, three functions apart: `_handle` said the server never resets the decoder, while `_track_session` documents at length that it does. The row-11 shape, in the file the issue is about
+- **§7.2's claim is wrong about the mechanism, not just the actor**: the shell does not stop sending states on `bridge_detached`; states stop because `FlyBridge.detach()` deletes the only emit site
+- **Round 1 of the RTT measurement read 54.8/86.8 ms before and 19.9/21.5 after** — a 4× "improvement" that was entirely machine load. Interleaved rounds agree to 0.3 ms. Second time this session that a non-interleaved cost comparison produced a confident wrong answer
+**Not done, deliberately**: #36's headline fix (re-asserting `halted` across a session-triggered reset) needs a design decision in `decoder.py`, which `qa-aim` is reading. Flagged rather than raced. #4's spec text is the architect's; the corrected wording is posted on #36 for whoever owns it
+**Label I believe is next**: **`qa`** for #57; #36 stays open on its headline. Not set by me.
+**Improvement Insights**:
+- [developer.md]: the interleaving rule earned its place twice in one session and is worth stating as a default rather than a remedy: **any A/B cost comparison runs its arms alternately, never all of one then all of the other.** Both times the non-interleaved run gave a confident wrong answer in the flattering direction.
+- [qa.md]: add — **a cap expressed in one unit must be measured in that unit.** `ws_max_size` caps bytes; the obvious `len(raw)` check counts characters and passes a frame 2 bytes over the limit. The general form: when a guard is re-implemented at a different layer, check the units of both.
+- [architect.md]: add — **a spec sentence containing "only" is a closed-set claim and needs the set enumerated from the code.** All three of #36's remaining items are one word: §3.4's "only" listing two exits where the code has three, twice, and §7.2 attributing to the shell something the bridge does.
